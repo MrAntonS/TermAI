@@ -1,5 +1,5 @@
-<aside class="w-64 bg-black-900 p-4 flex flex-col">
-  <button class="w-full bg-black text-green-400 font-semibold py-2 px-4 rounded-md mb-4 flex items-center justify-center hover:bg-gray-900 transition">
+<aside class="w-64 p-4 flex flex-col">
+  <button class="w-full text-green-400 font-semibold py-2 px-4 rounded-md mb-4 flex items-center justify-center hover:bg-gray-900 transition">
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 24" width="20" height="24" fill="currentColor" class="mr-2">
       <title>Lightning Bolt</title>
       <path d="M10 0 L6 12 L12 12 L8 24 L14 12 L10 12 Z" />

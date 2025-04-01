@@ -1,6 +1,7 @@
 <script lang="ts">
   import TerminalEmulator from '$lib/terminal/Terminal.svelte';
-  import QuickConnect from '$lib/QuickConnect.svelte';
+  import QuickConnect from '$lib/Connection Tab/QuickConnect.svelte';
+  import AIAgent from '$lib/AIAgent/AIAgent.svelte'; // Import the new component
 </script>
 
 <svelte:head>
@@ -15,7 +16,12 @@
   <QuickConnect />
 
   <!-- Main Content -->
-  <main class="flex-1 flex flex-col p-4 overflow-hidden">
-    <TerminalEmulator />
+  <main class="flex-1 flex p-4 overflow-hidden space-x-4">
+    <!-- Terminal takes up remaining space -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+       <TerminalEmulator />
+    </div>
+    <!-- AI Agent Panel -->
+    <AIAgent />
   </main>
 </div>
