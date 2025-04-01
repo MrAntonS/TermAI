@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { connectAndRunCommand as connect } from './DummyConnectionAgent';
   import { v4 as uuidv4 } from 'uuid';
 
   // Define the expected props, including callbacks
@@ -20,7 +21,7 @@
   };
 
   // Get props using $props rune
-  const { onClose, onNewConnection } = $props<$$Props>();
+  const { onClose, onNewConnection } = $props();
 
   // --- State for the form inputs ---
   // Use $state() for all variables bound to form inputs
@@ -37,9 +38,8 @@
     onClose();
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     console.log('Form submitted in modal. Attempting to connect with:', {
-      connectionName, // You can still read $state variables directly
       hostname,
       port,
       username,
@@ -48,19 +48,33 @@
 
     const payload: NewConnectionPayload = {
       id: uuidv4(),
-      name: connectionName || `${username}@${hostname}`, // Read values directly
+      name: connectionName || `${username}@${hostname}`,
       type: 'SSH',
       details: {
-        hostname, // Read value
-        port,     // Read value
-        username, // Read value
-        authMethod, // Read value
+        hostname,
+        port,
+        username,
+        authMethod,
       }
     };
 
-    // Call the onNewConnection callback prop directly with the payload
-    onNewConnection(payload);
-    closeModal();
+    try {
+      const connectionDetails = {
+        hostname,
+        port,
+        username,
+        authMethod,
+        password,
+        privateKeyPath,
+      };
+      const connectionResult = await connect('');
+      console.log(connectionResult); // Log the connection result
+      onNewConnection(payload);
+      closeModal();
+    } catch (error) {
+      console.error("Connection failed:", error);
+      // Handle connection error, maybe show an error message to the user
+    }
   }
 
   function handleKeydown(event: KeyboardEvent) {
