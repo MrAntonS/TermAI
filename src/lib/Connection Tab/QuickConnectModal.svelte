@@ -1,19 +1,15 @@
 <script lang="ts">
-  import { connectAndRunCommand as connect } from './DummyConnectionAgent';
+  import { connectOnly } from './DummyConnectionAgent';
   import { v4 as uuidv4 } from 'uuid';
+  import { addConnection, type ConnectionDetails, type ActiveConnection } from './ConnectionStore';
 
   // Define the expected props, including callbacks
-  type ConnectionDetails = {
-      hostname: string;
-      port: number;
-      username: string;
-      authMethod: 'password' | 'key';
-  };
   type NewConnectionPayload = {
       id: string;
       name: string;
       type: string;
       details: ConnectionDetails;
+      connection_id?: string; // Added to store the connection ID from backend
   };
   type $$Props = {
     onClose: () => void; // Callback for closing
@@ -105,11 +101,31 @@
         privateKeyPath,
       };
       
-      console.log('Sending connection details to agent:', connectionDetails);
+      console.log('Sending connection details to agent for connect-only:', connectionDetails);
       
-      // Pass both a command and the connection details
-      const connectionResult = await connect('ls', connectionDetails);
-      console.log('Connection result:', connectionResult); // Log the connection result
+      // Use the new connect-only function instead of running a command
+      const connectionInfo = await connectOnly(connectionDetails);
+      console.log('Connection result:', connectionInfo); 
+      
+      // Add the connection ID to the payload
+      payload.connection_id = connectionInfo.connection_id;
+      
+      // Add to the connections store
+      addConnection({
+        id: payload.id,
+        name: payload.name,
+        type: payload.type,
+        details: {
+          hostname,
+          port,
+          username,
+          authMethod,
+          password,
+          privateKeyPath
+        },
+        connectionId: connectionInfo.connection_id,
+        isActive: true
+      });
       
       // Only add to connections list and close modal if connection was successful
       onNewConnection(payload);

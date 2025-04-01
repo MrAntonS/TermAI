@@ -70,9 +70,11 @@
                   if (data === '\x08' || data === '\x7F') { // Backspace or Delete
                     // Handle backspace/delete
                     term?.write('\x08 \x08'); // Erase character from screen
-                  } else {
-                    term?.write(data); // Echo back the typed data
-                  }
+                  } 
+                  // Remove local echo to prevent duplication when streaming from server
+                  // else {
+                  //   term?.write(data); // Echo back the typed data
+                  // }
         
                   if (data === '\r') { // Enter key pressed
                     // Emulate command execution and response
@@ -156,12 +158,62 @@
     resizeObserver = null;
   });
 
-  // --- Optional: Expose methods ---
-  // export function writeToTerminal(data: string) {
-  //   if (term) { // Check if term is initialized
-  //     term.write(data);
-  //   }
-  // }
+  // --- Expose methods for external usage ---
+  export function writeToTerminal(data: string) {
+    if (term) { // Check if term is initialized
+      term.write(data);
+      return true;
+    }
+    return false;
+  }
+  
+  // Method for handling commands typed into the terminal
+  export function setCommandHandler(handler: (command: string) => Promise<string>) {
+    if (term) {
+      // Replace the default command handler with the custom one
+      term.onData(data => {
+        if (data === '\x08' || data === '\x7F') { // Backspace or Delete
+          // Handle backspace/delete
+          term?.write('\x08 \x08'); // Erase character from screen
+        } 
+        // Remove the local echo to prevent duplication
+        // else {
+        //   term?.write(data); // Echo back the typed data
+        // }
+
+        if (data === '\r') { // Enter key pressed
+          // Get the current line content *before* writing the newline response
+          const currentLineY = term.buffer.active.cursorY;
+          const commandLine = term.buffer.active.getLine(currentLineY);
+          // Use translateToString(true) to trim whitespace automatically
+          let command = commandLine?.translateToString(true).trim() || '';
+          
+          // Remove the prompt ('$ ') if it's included in the command
+          if (command.startsWith('$ ')) {
+            command = command.substring(2).trim();
+          }
+          
+          // Write the newline *after* capturing the command
+          term.write('\r\n');
+          
+          if (command) {
+            // Send command to the handler and process response
+            handler(command).then(response => {
+              if (response) {
+                term.write(response + '\r\n');
+              }
+              term.write('$ '); // Write prompt
+            }).catch(error => {
+              term.write(`Error: ${error}\r\n$ `);
+            });
+          } else {
+            // If just pressing Enter with no command
+            term.write('$ '); // Write prompt
+          }
+        }
+      });
+    }
+  }
 
 </script>
 

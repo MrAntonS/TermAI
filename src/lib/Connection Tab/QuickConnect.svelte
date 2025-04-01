@@ -2,26 +2,19 @@
   import { v4 as uuidv4 } from 'uuid';
   import { tick } from 'svelte'; // Import tick for focusing
   import QuickConnectModal from './QuickConnectModal.svelte';
-
-  // Define Connection type
-  type ConnectionDetails = {
-      hostname: string;
-      port: number;
-      username: string;
-      authMethod: 'password' | 'key';
+  import { activeConnections, currentConnectionId, setCurrentConnection, disconnect, type ActiveConnection } from './ConnectionStore';
+  
+  // Props for terminal control events
+  type $$Props = {
+    onSelectConnection?: (connectionId: string) => void;
   };
-  type Connection = {
-      id: string;
-      name: string;
-      type: string;
-      details?: ConnectionDetails;
-  };
-
+  
+  // Get props using $props rune
+  const { onSelectConnection } = $props();
+  
   // --- State ---
-  let connections = $state<Connection[]>([
-    { id: uuidv4(), name: 'Router-Core-1', type: 'SSH' },
-    { id: uuidv4(), name: 'Switch-Access-5', type: 'Telnet' },
-  ]);
+  // Use the activeConnections store instead of local state
+  let connections = $derived(Array.from($activeConnections));
 
   let loading = $state(false);
   let isModalOpen = $state(false);
@@ -40,13 +33,32 @@
     isModalOpen = false;
   }
 
-  function handleNewConnection(newConnection: Connection) {
+  function handleNewConnection(newConnection: any) {
       console.log('Received new connection data via prop:', newConnection);
-      connections.unshift(newConnection);
+      // The connection is already added to the store in QuickConnectModal
+      // Here we just notify the parent about the selected connection if callback is provided
+      if (onSelectConnection && newConnection.connection_id) {
+          onSelectConnection(newConnection.connection_id);
+      }
   }
 
   // --- Renaming Functions ---
-  async function startEditing(connection: Connection) {
+  // Handle connection selection
+  function selectConnection(connection: ActiveConnection) {
+    if (editingConnectionId === connection.id) {
+      return; // Don't select while editing
+    }
+    
+    console.log('Selecting connection:', connection);
+    setCurrentConnection(connection.id);
+    
+    // Notify parent component if callback exists
+    if (onSelectConnection) {
+      onSelectConnection(connection.connectionId);
+    }
+  }
+  
+  async function startEditing(connection: ActiveConnection) {
     editingConnectionId = connection.id;
     editingName = connection.name;
     // Wait for the DOM to update, then focus the input
@@ -105,7 +117,12 @@
   <div class="flex-grow overflow-y-auto pr-2 -mr-2">
     {#each connections as connection (connection.id)}
       <a href="#"
-         class="flex items-center p-2 rounded-md text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white group"
+         class="flex items-center p-2 rounded-md text-sm font-medium 
+                {$currentConnectionId === connection.id 
+                  ? 'bg-gray-700 text-white' 
+                  : 'text-gray-300 hover:bg-gray-700 hover:text-white'} 
+                group"
+         onclick={() => selectConnection(connection)}
          ondblclick={() => startEditing(connection)}
       >
         <svg class="w-5 h-5 mr-3 text-gray-400 group-hover:text-gray-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
