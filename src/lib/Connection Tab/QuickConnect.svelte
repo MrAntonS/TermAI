@@ -1,8 +1,9 @@
 <script lang="ts">
   import { v4 as uuidv4 } from 'uuid';
+  import { tick } from 'svelte'; // Import tick for focusing
   import QuickConnectModal from './QuickConnectModal.svelte';
 
-  // Define Connection type (adjust payload if needed)
+  // Define Connection type
   type ConnectionDetails = {
       hostname: string;
       port: number;
@@ -13,10 +14,10 @@
       id: string;
       name: string;
       type: string;
-      details?: ConnectionDetails; // Optional place to store more details
+      details?: ConnectionDetails;
   };
 
-  // Use $state for reactive variables in Svelte 5
+  // --- State ---
   let connections = $state<Connection[]>([
     { id: uuidv4(), name: 'Router-Core-1', type: 'SSH' },
     { id: uuidv4(), name: 'Switch-Access-5', type: 'Telnet' },
@@ -25,6 +26,12 @@
   let loading = $state(false);
   let isModalOpen = $state(false);
 
+  // State for editing
+  let editingConnectionId = $state<string | null>(null);
+  let editingName = $state('');
+  let inputElement: HTMLInputElement | null = null; // To hold reference to the input element for focus
+
+  // --- Modal Functions ---
   function openQuickConnectModal() {
     isModalOpen = true;
   }
@@ -33,15 +40,50 @@
     isModalOpen = false;
   }
 
-  // Handler for the new connection data passed via prop callback
   function handleNewConnection(newConnection: Connection) {
       console.log('Received new connection data via prop:', newConnection);
+      connections.unshift(newConnection);
+  }
 
-      // Add the new connection to the array (Svelte 5 reactivity handles update)
-      connections.unshift(newConnection); // Add to beginning
-      // Or: connections.push(newConnection); // Add to end
+  // --- Renaming Functions ---
+  async function startEditing(connection: Connection) {
+    editingConnectionId = connection.id;
+    editingName = connection.name;
+    // Wait for the DOM to update, then focus the input
+    await tick();
+    inputElement?.focus();
+    inputElement?.select(); // Optional: select text on focus
+  }
 
-      // Modal is closed by its own handleSubmit/closeModal now
+  function saveEdit() {
+    if (!editingConnectionId) return;
+
+    const trimmedName = editingName.trim();
+    if (trimmedName) { // Only save if not empty after trimming
+        const index = connections.findIndex(c => c.id === editingConnectionId);
+        if (index !== -1) {
+            // Create a new object to ensure reactivity if needed, or modify directly
+            // Direct modification works fine with $state arrays in S5
+            connections[index].name = trimmedName;
+        }
+    }
+    // If name was empty/whitespace only, it effectively cancels the edit without saving
+
+    cancelEdit(); // Exit editing mode
+  }
+
+  function cancelEdit() {
+    editingConnectionId = null;
+    editingName = ''; // Clear temp name
+    inputElement = null; // Clear element reference
+  }
+
+  function handleInputKeyDown(event: KeyboardEvent) {
+    if (event.key === 'Enter') {
+      saveEdit();
+    } else if (event.key === 'Escape') {
+      cancelEdit();
+    }
   }
 
 </script>
@@ -62,9 +104,25 @@
   <h2 class="text-xs font-semibold uppercase text-gray-400 tracking-wide mb-2 pl-2">Connections</h2>
   <div class="flex-grow overflow-y-auto pr-2 -mr-2">
     {#each connections as connection (connection.id)}
-      <a href="#" class="flex items-center p-2 rounded-md text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white group">
-        <svg class="w-5 h-5 mr-3 text-gray-400 group-hover:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-        <span class="truncate">{connection.name} ({connection.type})</span>
+      <a href="#"
+         class="flex items-center p-2 rounded-md text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white group"
+         ondblclick={() => startEditing(connection)}
+      >
+        <svg class="w-5 h-5 mr-3 text-gray-400 group-hover:text-gray-300 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+
+        {#if editingConnectionId === connection.id}
+          <input
+            type="text"
+            bind:this={inputElement} 
+            bind:value={editingName}  
+            onblur={saveEdit}         
+            onkeydown={handleInputKeyDown} 
+            class="flex-grow bg-gray-600 text-white text-sm p-0 border border-blue-400 rounded outline-none focus:ring-1 focus:ring-blue-300"
+            autocomplete="off"
+          />
+        {:else}
+          <span class="truncate">{connection.name} ({connection.type})</span>
+        {/if}
       </a>
     {/each}
     {#if loading}
@@ -78,7 +136,7 @@
 
 {#if isModalOpen}
   <QuickConnectModal
-    onClose={closeQuickConnectModal}      
+    onClose={closeQuickConnectModal}
     onNewConnection={handleNewConnection}
   />
 {/if}
@@ -113,5 +171,14 @@
   }
   div::-webkit-scrollbar-thumb:hover {
     background: #718096;
+  }
+
+  /* Simple style for the edit input to make it fit better */
+  input[type="text"] {
+      /* Minimal styling, adjust as needed */
+      height: 1.5em; /* Match text height */
+      line-height: 1.5em;
+      padding: 0 0.25em; /* Minimal padding */
+      margin-left: -0.25em; /* Align with text */
   }
 </style>
