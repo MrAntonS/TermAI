@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Terminal Emulator Concept (Floating Terminal)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/xterm/css/xterm.css" />
+    <script src="https://unpkg.com/xterm/lib/xterm.js"></script>
+    <script src="https://unpkg.com/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      /* Color Palette */
+      :root {
+        --color-primary-black: #0f0f0f; /* Slightly lighter black */
+        --color-border-gray: #36454f;
+        --color-text-white: #468f46; /* Slightly darker light green */
+        --color-hover-bg: #4a5560;   /* Derived from gray for hovers */
+        --color-panel-bg: #0f0f0f; /* Slightly lighter black */
+      }
+
+      body {
+        background-color: var(--color-primary-black);
+        color: var(--color-text-white);
+        font-family: 'Inter', sans-serif;
+        text-shadow: 0 0 5px rgba(255, 255, 250, 0.3); /* Soft dispersing effect */
+      }
+
+      aside {
+        width: 16rem;
+        background-color: var(--color-panel-bg); /* Black */
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+      }
+
+      main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        padding: 1rem;
+        overflow: hidden;
+      }
+
+      /* Ensure text color is applied generally, overriding where needed */
+      h2, h3, p, a, span, button, div, section, label {
+        color: var(--color-text-white) !important;
+        text-shadow: 0 0 5px rgba(255, 255, 250, 0.3); /* Soft dispersing effect */
+      }
+      /* Remove shadow specifically from panel header h2 if needed */
+      .panel-header h2 {
+         text-shadow: none;
+      }
+
+
+      /* Inputs and Textareas */
+      textarea, input {
+        color: var(--color-text-white) !important;
+        background-color: var(--color-primary-black) !important; /* Use black bg */
+      }
+       textarea:focus, input:focus {
+         outline: none;
+         box-shadow: 0 0 0 1px var(--color-hover-bg) !important;
+       }
+
+
+      /* Sidebar Styles */
+      .sidebar-button {
+        width: 100%;
+        background-color: var(--color-border-gray);
+        color: var(--color-text-white);
+        font-weight: 600;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 150ms ease-in-out;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        border: none; /* Remove default border */
+      }
+
+      .sidebar-button:hover {
+        background-color: var(--color-hover-bg);
+      }
+
+      .sidebar-heading {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--color-text-white) !important; /* Ensure white text */
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.5rem;
+        padding-left: 0.5rem; /* Add padding like headers */
+        text-shadow: none; /* Remove shadow from this specific heading */
+      }
+
+      .sidebar-link {
+        display: flex;
+        align-items: center;
+        padding: 0.5rem;
+        border-radius: 0.375rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: var(--color-text-white) !important; /* Ensure white text */
+      }
+
+      .sidebar-link:hover, .sidebar-link.active {
+        background-color: var(--color-border-gray);
+        color: var(--color-text-white) !important;
+      }
+
+      .sidebar-icon {
+        margin-right: 0.75rem;
+        color: inherit;
+      }
+
+      /* Panel styles (Default styling if needed, specific panels override bg) */
+      .panel {
+        border-radius: 0.5rem;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+         display: flex; /* Added to allow header/content flex */
+         flex-direction: column; /* Stack header and content */
+      }
+
+      .panel-header {
+        /* background-color: var(--color-border-gray); /* Removed background */
+        padding: 0.5rem 1rem; /* Keep padding */
+        /* border-bottom: 1px solid var(--color-border-gray); /* Removed border */
+        color: var(--color-text-white) !important; /* Ensure white text */
+        font-size: 0.875rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem; /* Added margin for separation below header text */
+        flex-shrink: 0; /* Prevent header from shrinking */
+      }
+
+
+       /* Terminal specific styles */
+      #terminal-section {
+        flex: 1;
+        display: flex; /* Keep display:flex */
+        flex-direction: column; /* Keep column direction */
+        background-color: var(--color-panel-bg); /* Black */
+        border-radius: 0.5rem;
+        border: 1px solid rgba(255, 255, 255, 0.1); /* Soft white-gray border */
+        overflow: hidden;
+        margin-right: 1rem;
+      }
+
+      #terminal-container {
+        flex-grow: 1; /* Allow container to fill space */
+        margin: 0 1rem 1rem 1rem; /* Adjust margin (remove top) */
+        background-color: var(--color-primary-black); /* Use primary black for terminal BG */
+        border-radius: 0.375rem; /* Slightly smaller radius */
+        overflow: hidden;
+        padding: 0.5rem;
+      }
+
+
+      #terminal {
+        width: 100%;
+        height: 100%;
+      }
+
+      /* AI Assistant panel */
+      .ai-panel {
+        width: 33.333333%;
+        display: flex; /* Keep display:flex */
+        flex-direction: column; /* Keep column direction */
+        background-color: var(--color-panel-bg); /* Black */
+        border-radius: 0.5rem;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+      }
+
+
+      .ai-content {
+        flex: 1;
+        padding: 0 1rem 1rem 1rem; /* Adjust padding (remove top) */
+        overflow-y: auto;
+      }
+
+      .ai-message {
+        margin-bottom: 1rem;
+        color: var(--color-text-white) !important;
+        font-size: 0.875rem;
+        font-style: italic;
+      }
+
+      .ai-suggestion, .ai-explanation {
+        background-color: var(--color-border-gray); /* Use gray for these boxes */
+        padding: 0.75rem;
+        border-radius: 0.375rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+      }
+
+      .ai-suggestion-title, .ai-explanation-title {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--color-text-white) !important;
+        margin-bottom: 0.25rem;
+        text-shadow: none; /* Remove shadow */
+      }
+
+      .ai-suggestion-content, .ai-explanation-content {
+        font-size: 0.875rem;
+        color: var(--color-text-white) !important;
+         text-shadow: none; /* Remove shadow */
+      }
+
+      .ai-input-area {
+        margin-top: auto; /* Keep push to bottom */
+        padding: 1rem;
+        background-color: var(--color-panel-bg); /* Black */
+        flex-shrink: 0; /* Prevent input area from shrinking */
+      }
+
+      .ai-textarea {
+        width: 100%;
+        background-color: var(--color-primary-black) !important; /* Darker background for textarea */
+        border-radius: 0.375rem;
+        padding: 0.5rem;
+        font-size: 0.875rem;
+        color: var(--color-text-white) !important; /* White text */
+        resize: none;
+      }
+
+      .ai-send-button {
+        margin-top: 0.5rem;
+        width: 100%;
+        background-color: var(--color-border-gray); /* Gray button */
+        color: var(--color-text-white) !important; /* White text */
+        font-weight: 600;
+        padding: 0.375rem 0.75rem;
+        border-radius: 0.375rem;
+        font-size: 0.875rem;
+        transition: all 150ms ease-in-out;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        border: none; /* Remove default border */
+      }
+
+      .ai-send-button:hover {
+        background-color: var(--color-hover-bg); /* Use hover color */
+      }
+
+      code {
+        background-color: var(--color-primary-black); /* Black bg for code */
+        padding: 0.1rem 0.3rem; /* Adjusted padding */
+        border-radius: 0.25rem;
+        font-size: 0.8em; /* Relative font size */
+        color: var(--color-text-white) !important; /* White text */
+        text-shadow: none; /* Remove inherited shadow from code */
+      }
+
+
+      /* Custom scrollbar styling */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: var(--color-primary-black); /* Black track */
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background-color: var(--color-border-gray); /* Gray thumb */
+        border-radius: 4px;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background-color: var(--color-hover-bg); /* Lighter gray on hover */
+      }
+
+      /* Ensure the xterm has proper colors (handled in JS theme) */
+       .xterm .xterm-viewport {
+           background-color: var(--color-primary-black) !important; /* Match terminal container bg */
+       }
+
+       .xterm .xterm-screen {
+           background-color: var(--color-primary-black) !important; /* Match terminal container bg */
+       }
+
+
+      @font-face {
+        font-family: 'LucideIcons';
+        src: url(https://cdn.jsdelivr.net/npm/lucide-static@latest/font/Lucide.ttf) format('truetype');
+      }
+
+      .lucide {
+        font-family: 'LucideIcons';
+        font-size: 1.25rem;
+        line-height: 1;
+        font-style: normal;
+        font-weight: normal;
+        font-variant: normal;
+        text-transform: none;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+         color: inherit !important; /* Inherit color for icons */
+         text-shadow: none; /* Remove shadow from icons */
+      }
+    </style>
+</head>
+<body class="h-screen flex overflow-hidden">
+
+    <aside>
+        <button class="sidebar-button">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 24" width="20" height="24" fill="currentColor"  class="mr-2"><title>Lightning Bolt</title><path d="M10 0 L6 12 L12 12 L8 24 L14 12 L10 12 Z" /></svg> Quick Connect
+        </button>
+
+        <h2 class="sidebar-heading">Connections</h2>
+        <div class="flex-grow overflow-y-auto space-y-2 pr-1">
+             <a href="#" class="sidebar-link active">
+                <svg class="sidebar-icon w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm0-2a6 6 0 100-12 6 6 0 000 12z" clip-rule="evenodd"></path></svg>
+                <span>Router-Core-1 (SSH)</span>
+            </a>
+            <a href="#" class="sidebar-link">
+                 <svg class="sidebar-icon w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 10a3 3 0 116 0 3 3 0 01-6 0z" clip-rule="evenodd"></path></svg>
+                <span>Switch-Access-5 (Telnet)</span>
+            </a>
+        </div>
+    </aside>
+
+    <main>
+        <div class="flex-1 flex space-x-4 overflow-hidden">
+            <section id="terminal-section" class="panel"> <div class="panel-header">
+                    <h2>Router-Core-1 Console (SSH)</h2>
+                </div>
+                <div id="terminal-container">
+                    <div id="terminal"></div>
+                </div>
+            </section>
+
+             <section class="ai-panel"> <div class="panel-header flex items-center justify-between">
+                    <h2>AI Assistant</h2>
+                    <button title="Toggle AI Panel Visibility" class="p-1 rounded-full hover:bg-gray-600">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z"></path><path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"></path></svg>
+                    </button>
+                </div>
+                <div class="ai-content">
+                    <div class="ai-message">AI chat interface initialized. Ready for input.</div>
+                     <div class="ai-suggestion">
+                        <p class="ai-suggestion-title">Suggestion:</p>
+                        <p class="ai-suggestion-content">Check interface status: <code>show ip interface brief</code></p>
+                    </div>
+                     <div class="ai-explanation">
+                        <p class="ai-explanation-title">Explanation:</p>
+                        <p class="ai-explanation-content">OSPF state 'FULL' means successful adjacency.</p>
+                    </div>
+                </div>
+               <div class="ai-input-area">
+                   <textarea rows="3" id="ai-textarea" class="ai-textarea" placeholder="Ask the AI..."></textarea>
+                   <button id="ai-send-button" class="ai-send-button">Send</button>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        // Script remains the same as the previous version
+        const computedStyle = getComputedStyle(document.documentElement);
+        const colorPrimaryBlack = computedStyle.getPropertyValue('--color-primary-black').trim();
+        const colorBorderGray = computedStyle.getPropertyValue('--color-border-gray').trim();
+        const colorTextWhite = computedStyle.getPropertyValue('--color-text-white').trim();
+
+        const term = new Terminal({
+            cursorBlink: true,
+            fontFamily: 'monospace',
+            fontSize: 14,
+            theme: {
+                background: colorPrimaryBlack,
+                foreground: colorTextWhite,
+                cursor: colorTextWhite,
+                selectionBackground: colorBorderGray,
+                black: colorPrimaryBlack,
+                red: '#fc8181',
+                green: '#68d391',
+                yellow: '#f6e05e',
+                blue: '#63b3ed',
+                magenta: '#b794f4',
+                cyan: '#4fd1c5',
+                white: colorTextWhite,
+                brightBlack: colorBorderGray,
+                brightRed: '#fc8181',
+                brightGreen: '#68d391',
+                brightYellow: '#f6e05e',
+                brightBlue: '#63b3ed',
+                brightMagenta: '#b794f4',
+                brightCyan: '#4fd1c5',
+                brightWhite: colorTextWhite,
+            },
+            allowProposedApi: true
+        });
+
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+
+        const terminalElement = document.getElementById('terminal');
+        if (terminalElement) {
+            term.open(terminalElement);
+
+            function fitTerminal() {
+                try { fitAddon.fit(); } catch (e) { console.error("Error fitting terminal:", e); }
+            }
+
+            term.writeln('\x1b[1;37mWelcome to the AI Terminal Emulator! (Colors Updated)\x1b[0m');
+            term.writeln('Connecting to Router-Core-1 via SSH...');
+            term.writeln('\x1b[34mRouter-Core-1#\x1b[0m ');
+
+            let currentLine = '';
+            term.onKey(({ key, domEvent }) => {
+                const printable = !domEvent.altKey && !domEvent.ctrlKey && !domEvent.metaKey;
+                if (domEvent.key === 'Enter') {
+                    term.writeln('');
+                    if (currentLine.trim() === 'clear') {
+                        term.clear();
+                        term.writeln('\x1b[1;37mWelcome back!\x1b[0m');
+                    } else if (currentLine.trim()) {
+                        term.writeln(`\x1b[36mExecuting: ${currentLine}\x1b[0m`);
+                        if (currentLine.includes('show ip int brief')) {
+                            term.writeln('Interface              IP-Address      OK? Method Status                Protocol');
+                            term.writeln('GigabitEthernet0/0     192.168.1.1     YES NVRAM  up                    up');
+                            term.writeln('GigabitEthernet0/1     unassigned      YES NVRAM  administratively down down');
+                        } else { term.writeln('Simulated command output...'); }
+                    }
+                    term.write('\x1b[34mRouter-Core-1#\x1b[0m ');
+                    currentLine = '';
+                } else if (domEvent.key === 'Backspace') {
+                    if (currentLine.length > 0) { term.write('\b \b'); currentLine = currentLine.slice(0, -1); }
+                } else if (printable && key.length === 1) { currentLine += key; term.write(key); }
+            });
+
+            const resizeObserver = new ResizeObserver(entries => {
+                 window.requestAnimationFrame(() => { if (entries.length > 0) { fitTerminal(); } });
+            });
+            const terminalContainer = document.getElementById('terminal-container');
+             if (terminalContainer) { resizeObserver.observe(terminalContainer); }
+             else { console.error("Terminal container not found"); resizeObserver.observe(terminalElement); }
+            setTimeout(fitTerminal, 200);
+        } else { console.error("Terminal element (#terminal) not found!"); }
+
+        const aiSendButton = document.getElementById('ai-send-button');
+        const aiTextarea = document.getElementById('ai-textarea');
+        const aiContent = document.querySelector('.ai-content');
+
+        if (aiSendButton && aiTextarea && aiContent) {
+            aiSendButton.addEventListener('click', () => {
+                const question = aiTextarea.value;
+                if (question.trim() !== '') {
+                    const aiResponse = `Simulated AI response to: ${question}`;
+                    const messageDiv = document.createElement('div');
+                    messageDiv.classList.add('ai-message');
+                    messageDiv.innerHTML = `<b>User:</b> ${question}<br><b>AI:</b> ${aiResponse}`;
+                    aiContent.appendChild(messageDiv);
+                    aiTextarea.value = ''; // Clear the textarea
+                    aiContent.scrollTop = aiContent.scrollHeight; // Scroll to bottom
+                }
+            });
+        } else {
+            console.error("AI elements not found!");
+        }
+    </script>
+</body>
+</html>
