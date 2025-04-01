@@ -32,19 +32,55 @@
   let authMethod = $state<'password' | 'key'>('password');
   let password = $state('');
   let privateKeyPath = $state('');
+  
+  // Add state for connection status and errors
+  let connecting = $state(false);
+  let connectionError = $state<string | null>(null);
 
   function closeModal() {
     // Call the onClose callback prop directly
     onClose();
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(event: Event) {
+    // Prevent default form submission
+    event.preventDefault();
+    
+    // Clear any previous errors
+    connectionError = null;
+    connecting = true;
+    
     console.log('Form submitted in modal. Attempting to connect with:', {
       hostname,
       port,
       username,
       authMethod,
     });
+
+    // Client-side validation
+    if (!hostname.trim()) {
+      connectionError = "Hostname is required";
+      connecting = false;
+      return;
+    }
+    
+    if (!username.trim()) {
+      connectionError = "Username is required";
+      connecting = false;
+      return;
+    }
+    
+    if (authMethod === 'password' && !password.trim()) {
+      connectionError = "Password is required";
+      connecting = false;
+      return;
+    }
+    
+    if (authMethod === 'key' && !privateKeyPath.trim()) {
+      connectionError = "Private key path is required";
+      connecting = false;
+      return;
+    }
 
     const payload: NewConnectionPayload = {
       id: uuidv4(),
@@ -59,6 +95,7 @@
     };
 
     try {
+      // Create a proper connection details object to pass to the connection function
       const connectionDetails = {
         hostname,
         port,
@@ -67,13 +104,22 @@
         password,
         privateKeyPath,
       };
-      const connectionResult = await connect('');
-      console.log(connectionResult); // Log the connection result
+      
+      console.log('Sending connection details to agent:', connectionDetails);
+      
+      // Pass both a command and the connection details
+      const connectionResult = await connect('ls', connectionDetails);
+      console.log('Connection result:', connectionResult); // Log the connection result
+      
+      // Only add to connections list and close modal if connection was successful
       onNewConnection(payload);
       closeModal();
     } catch (error) {
       console.error("Connection failed:", error);
-      // Handle connection error, maybe show an error message to the user
+      // Set the error message to display in the UI
+      connectionError = `${error}`;
+    } finally {
+      connecting = false;
     }
   }
 
@@ -88,6 +134,19 @@
 <svelte:window on:keydown={handleKeydown}/>
 
 <div class="modal-backdrop" onclick={closeModal}>
+  <!-- Floating error message outside the modal -->
+  {#if connectionError}
+    <div class="floating-error-message">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+      </svg>
+      <span>{connectionError}</span>
+      <button class="dismiss-error" onclick={() => connectionError = null} aria-label="Dismiss error">
+        &times;
+      </button>
+    </div>
+  {/if}
+
   <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="ssh-modal-title" onclick={(e: Event) => e.stopPropagation()}>
     <button class="close-button" onclick={closeModal} aria-label="Close modal">&times;</button>
 
@@ -138,12 +197,19 @@
           </div>
       {/if}
 
+      <!-- Removed inline error message -->
+      
       <div class="modal-actions">
-        <button type="button" onclick={closeModal} class="button-secondary">
+        <button type="button" onclick={closeModal} class="button-secondary" disabled={connecting}>
           Cancel
         </button>
-         <button type="submit" class="button-primary">
-          Connect & Add
+        <button type="submit" class="button-primary" disabled={connecting}>
+          {#if connecting}
+            <span class="spinner"></span>
+            Connecting...
+          {:else}
+            Connect & Add
+          {/if}
         </button>
       </div>
     </form>
@@ -370,5 +436,83 @@
    .button-secondary:hover {
     background-color: #666;
     border-color: #666;
+  }
+  
+  /* Floating error message styles */
+  .floating-error-message {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2000;
+    
+    background-color: #430f0f;
+    border: 1px solid #ff5252;
+    color: #ffa0a0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 90%;
+    width: auto;
+    
+    animation: slideInDown 0.3s ease-out;
+  }
+  
+  @keyframes slideInDown {
+    from {
+      transform: translate(-50%, -30px);
+      opacity: 0;
+    }
+    to {
+      transform: translate(-50%, 0);
+      opacity: 1;
+    }
+  }
+  
+  .floating-error-message svg {
+    flex-shrink: 0;
+  }
+  
+  .floating-error-message span {
+    font-size: 0.9rem;
+    line-height: 1.4;
+    flex-grow: 1;
+  }
+  
+  .dismiss-error {
+    background: none;
+    border: none;
+    color: #ffa0a0;
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0;
+    margin-left: 8px;
+  }
+  
+  .dismiss-error:hover {
+    color: #ffffff;
+  }
+  
+  /* Spinner for loading state */
+  .spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: #fff;
+    animation: spin 1s ease infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  
+  /* Button disabled state */
+  button:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
   }
 </style>
