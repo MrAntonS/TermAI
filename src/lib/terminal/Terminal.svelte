@@ -87,7 +87,7 @@
                         // Write the newline *after* capturing the command
                         term.write('\r\n');
 
-                        if (command === 'show ip int br') {
+                        if (command === '$ show ip int br' || command === '$ show ip int brief') {
                           term.write('Interface      IP-Address   Status      Protocol\r\n');
                           term.write('GigabitEthernet0/0 192.168.1.1  up          up      \r\n');
                           term.write('GigabitEthernet0/1 unassigned   administratively down down    \r\n');

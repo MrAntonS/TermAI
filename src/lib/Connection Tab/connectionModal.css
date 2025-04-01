@@ -1,0 +1,223 @@
+/* ssh-modal-dark.css */
+
+/* --- Base Modal Styles (Dark Theme) --- */
+.modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.8); /* Darker backdrop */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+  }
+  
+  .modal-content {
+    background-color: #1a1a1a; /* Very dark grey background */
+    color: #e0e0e0; /* Light grey text for readability */
+    padding: 1.5rem 2rem;
+    border-radius: 6px;
+    border: 1px solid #444; /* Darker border */
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.6); /* Pronounced shadow */
+    min-width: 400px;
+    max-width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+    position: relative;
+  }
+  
+  .close-button {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    background: none;
+    border: none;
+    font-size: 1.8rem; /* Slightly larger for easier clicking */
+    line-height: 1;
+    cursor: pointer;
+    color: #888; /* Medium grey */
+  }
+  .close-button:hover {
+    color: #fff; /* White on hover */
+  }
+  
+  .modal-content h2 {
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    color: #ffffff; /* Pure white title */
+    font-size: 1.3rem;
+    text-align: center;
+    border-bottom: 1px solid #444; /* Dark separator */
+    padding-bottom: 0.8rem;
+  }
+  
+  /* --- Form Specific Styles (Dark Theme) --- */
+  .ssh-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1.2rem; /* Slightly increased gap */
+  }
+  
+  .form-group {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .form-group-inline {
+    flex-direction: row;
+    gap: 1rem;
+    align-items: flex-end;
+  }
+  
+  .form-subgroup {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+  }
+  
+  .form-group label,
+  .form-group legend {
+    margin-bottom: 0.5rem; /* Slightly more space */
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #bbbbbb; /* Lighter grey for labels */
+  }
+  
+  .form-group input[type="text"],
+  .form-group input[type="number"],
+  .form-group input[type="password"] {
+    padding: 0.7rem 0.9rem; /* Slightly more padding */
+    border: 1px solid #555; /* Dark grey border */
+    border-radius: 4px;
+    font-size: 1rem;
+    background-color: #2a2a2a; /* Dark input background */
+    color: #e0e0e0; /* Light grey text */
+  }
+  
+  /* Style placeholder text */
+  .form-group input::placeholder {
+      color: #777; /* Dimmer grey for placeholders */
+      opacity: 1; /* Override browser defaults */
+  }
+  .form-group input:-ms-input-placeholder { /* IE/Edge */
+      color: #777;
+  }
+  .form-group input::-ms-input-placeholder { /* IE/Edge */
+      color: #777;
+  }
+  
+  
+  .form-group input:focus {
+      border-color: #ffffff; /* White border on focus */
+      outline: none;
+      /* Optional: slight glow instead of box-shadow for dark theme */
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+      background-color: #333; /* Slightly lighten background on focus */
+  }
+  
+  fieldset.form-group {
+    border: 1px solid #555; /* Dark grey border */
+    padding: 0.8rem 1rem;
+    border-radius: 4px;
+    margin-top: 0.5rem;
+  }
+  
+  fieldset.form-group legend {
+      padding: 0 0.5rem;
+      margin-bottom: 0.6rem;
+      font-size: 0.85rem;
+      color: #cccccc; /* Even lighter grey for legend */
+  }
+  
+  .radio-group {
+      display: flex;
+      gap: 1.5rem;
+  }
+  .radio-group label {
+      font-weight: normal;
+      font-size: 0.95rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem; /* More space for radio */
+      color: #e0e0e0; /* Ensure label text is light */
+      margin-bottom: 0;
+  }
+   .radio-group input[type="radio"] {
+       margin-top: -2px;
+       /* Optional: custom radio button appearance for dark theme */
+       appearance: none;
+       -webkit-appearance: none;
+       background-color: #444;
+       border: 1px solid #777;
+       width: 16px;
+       height: 16px;
+       border-radius: 50%;
+       cursor: pointer;
+       position: relative;
+   }
+   .radio-group input[type="radio"]:checked {
+       background-color: #fff; /* White circle when checked */
+       border: 1px solid #fff;
+   }
+    /* Add inner dot for checked state */
+   .radio-group input[type="radio"]:checked::after {
+       content: '';
+       display: block;
+       width: 8px;
+       height: 8px;
+       border-radius: 50%;
+       background-color: #1a1a1a; /* Background color dot */
+       position: absolute;
+       top: 50%;
+       left: 50%;
+       transform: translate(-50%, -50%);
+   }
+  
+  
+  /* --- Action Button Styles (Dark Theme) --- */
+   .modal-actions {
+       margin-top: 1.5rem;
+       padding-top: 1rem;
+       border-top: 1px solid #444; /* Dark separator */
+       display: flex;
+       justify-content: flex-end;
+       gap: 0.8rem;
+   }
+  
+  .button-primary,
+  .button-secondary {
+    border: 1px solid transparent; /* Add border for structure */
+    padding: 10px 20px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 1rem;
+    font-weight: 600; /* Make button text bolder */
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+  }
+  
+  .button-primary {
+    /* White button with dark text for high contrast */
+    background-color: #ffffff;
+    color: #1a1a1a;
+    border-color: #ffffff;
+  }
+  .button-primary:hover {
+    background-color: #e0e0e0; /* Slightly grey on hover */
+    border-color: #e0e0e0;
+  }
+  
+  .button-secondary {
+    /* Dark grey button with light text */
+    background-color: #555;
+    color: #ffffff;
+    border-color: #555;
+  }
+   .button-secondary:hover {
+    background-color: #666;
+    border-color: #666;
+  }
