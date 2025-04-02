@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { connectOnly } from './DummyConnectionAgent';
+  // Removed: import { connectOnly } from './DummyConnectionAgent';
   import { v4 as uuidv4 } from 'uuid';
   import { addConnection, type ConnectionDetails, type ActiveConnection } from './ConnectionStore';
 
@@ -11,13 +11,17 @@
       details: ConnectionDetails;
       connection_id?: string; // Added to store the connection ID from backend
   };
+  // Update type to expect string (connectionId) or null
+  type TerminalConnectFn = (options: { hostname: string; port: number; username: string; password?: string }) => Promise<string | null>;
+
   type $$Props = {
     onClose: () => void; // Callback for closing
     onNewConnection: (payload: NewConnectionPayload) => void; // Callback for new connection
+    terminalConnect: TerminalConnectFn; // Prop to receive the terminal's connect function
   };
 
   // Get props using $props rune
-  const { onClose, onNewConnection } = $props();
+  const { onClose, onNewConnection, terminalConnect } = $props(); // Get the new prop
 
   // --- State for the form inputs ---
   // Use $state() for all variables bound to form inputs
@@ -103,33 +107,48 @@
       
       console.log('Sending connection details to agent for connect-only:', connectionDetails);
       
-      // Use the new connect-only function instead of running a command
-      const connectionInfo = await connectOnly(connectionDetails);
-      console.log('Connection result:', connectionInfo); 
-      
-      // Add the connection ID to the payload
-      payload.connection_id = connectionInfo.connection_id;
+      // Use the terminal's connect function passed via prop
+      const returnedConnectionId = await terminalConnect({
+          hostname: connectionDetails.hostname,
+          port: connectionDetails.port,
+          username: connectionDetails.username,
+          password: connectionDetails.password // Pass password if available
+          // Note: Key-based auth needs implementation in main.rs and Terminal.svelte connect
+      });
+      console.log('Terminal connect result (connectionId):', returnedConnectionId);
+
+      if (!returnedConnectionId) {
+          // The terminal component itself should display detailed errors.
+          // We just show a generic failure message here in the modal's context.
+          throw new Error("Connection failed. Check terminal for details.");
+      }
+
+      // If successful, store the returned connectionId and proceed
+      payload.connection_id = returnedConnectionId; // Store the ID in the payload for the callback
       
       // Add to the connections store
+      // Add the connection configuration to the store.
+      // Note: isActive might need to be managed differently now, perhaps based on terminal state.
+      // For now, we add it as inactive, assuming the parent component handles activation/selection.
       addConnection({
         id: payload.id,
         name: payload.name,
         type: payload.type,
-        details: {
+        details: { // Store the full details needed to reconnect
           hostname,
           port,
           username,
           authMethod,
-          password,
-          privateKeyPath
-        },
-        connectionId: connectionInfo.connection_id,
-        isActive: true
-      });
-      
-      // Only add to connections list and close modal if connection was successful
-      onNewConnection(payload);
-      closeModal();
+          password: authMethod === 'password' ? password : undefined, // Store password only if method is password
+         privateKeyPath: authMethod === 'key' ? privateKeyPath : undefined // Store key path only if method is key
+       },
+       connectionId: returnedConnectionId, // Use the ID returned by terminalConnect
+       isActive: true // Mark as active since connection succeeded
+     });
+
+     // Call the callback to notify parent (e.g., QuickConnect)
+     onNewConnection(payload); // Pass payload which now includes connection_id
+     closeModal();
     } catch (error) {
       console.error("Connection failed:", error);
       // Set the error message to display in the UI

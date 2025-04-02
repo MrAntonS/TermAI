@@ -7,48 +7,31 @@
   
   // Reference to the terminal component
   let terminalComponent: TerminalEmulator;
-  let activeConnectionId = $state<string | null>(null);
+  // Removed activeConnectionId state, as TerminalEmulator manages its own connection state internally.
   
   // Handle when a connection is selected
   function handleConnectionSelect(connectionId: string) {
-    console.log('Connection selected:', connectionId);
-    activeConnectionId = connectionId;
-    
-    // Set up the terminal to use the selected connection
-    if (terminalComponent) {
-      // Set the command handler to use our connection
-      terminalComponent.setCommandHandler(async (command: string) => {
-        try {
-          console.log('Executing command:', command);
-          
-          if (!activeConnectionId) {
-            return "No active connection";
-          }
-          
-          // Ensure we're not getting $ in the command
-          const cleanCommand = command.startsWith('$') 
-            ? command.substring(1).trim() 
-            : command;
-          
-          // Execute the command on the selected connection and return the response
-          const result = await runCommand(cleanCommand);
-          return result;
-        } catch (error) {
-          console.error('Error executing command:', error);
-          return `Error: ${error}`;
-        }
-      });
-      
-      // Clear the terminal and add a welcome message
-      terminalComponent.writeToTerminal("\r\n\x1b[1mConnected to SSH session. You can now type commands.\x1b[0m\r\n\r\n$ ");
-    }
+    // This function is called when a connection is selected from the QuickConnect list.
+    // The previous logic calling `setCommandHandler` is removed as it's no longer
+    // needed; Terminal.svelte handles its input/output directly via Tauri invokes/events.
+    console.log('Connection selected in list (ID might be internal store ID):', connectionId);
+
+    // TODO: Implement logic if selecting an existing connection from the list should
+    // re-establish the connection in the terminal. This would involve:
+    // 1. Getting connection details from ConnectionStore using `connectionId`.
+    // 2. Calling `terminalComponent.connect(details)`.
+    // For now, selecting from the list doesn't re-initiate the connection in the terminal.
+    // The active connection state is primarily managed by the Terminal component itself
+    // after being initiated by the QuickConnectModal.
   }
   
   onMount(() => {
     // Initial setup for terminal if needed
-    if (terminalComponent && !activeConnectionId) {
-      terminalComponent.writeToTerminal("Welcome to the terminal. Select a connection to begin.\r\n");
-    }
+    // The TerminalEmulator component handles its own initial welcome message.
+    // No specific action needed here unless we want to override it.
+    // if (terminalComponent) {
+    //   // Example: terminalComponent.writeToTerminal("Page loaded.\r\n");
+    // }
   });
 </script>
 
@@ -61,7 +44,10 @@
 
 <div class="h-screen flex overflow-hidden bg-black text-green-500 font-inter">
   <!-- Sidebar -->
-  <QuickConnect onSelectConnection={handleConnectionSelect} />
+  <QuickConnect
+    onSelectConnection={handleConnectionSelect}
+    terminalConnectFn={terminalComponent?.connect}
+  />
 
   <!-- Main Content -->
   <main class="flex-1 flex p-4 overflow-hidden space-x-4">

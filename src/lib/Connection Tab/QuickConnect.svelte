@@ -4,13 +4,18 @@
   import QuickConnectModal from './QuickConnectModal.svelte';
   import { activeConnections, currentConnectionId, setCurrentConnection, disconnect, type ActiveConnection } from './ConnectionStore';
   
-  // Props for terminal control events
+  // Define the type for the connect function passed from the parent
+  type TerminalConnectFn = (options: { hostname: string; port: number; username: string; password?: string }) => Promise<string | null>;
+
+  // Props for terminal control events and the connect function
   type $$Props = {
     onSelectConnection?: (connectionId: string) => void;
+    terminalConnectFn?: TerminalConnectFn; // Add the prop to receive the function
   };
   
   // Get props using $props rune
-  const { onSelectConnection } = $props();
+  // Get props using $props rune
+  const { onSelectConnection, terminalConnectFn } = $props(); // Get the new prop
   
   // --- State ---
   // Use the activeConnections store instead of local state
@@ -155,6 +160,7 @@
   <QuickConnectModal
     onClose={closeQuickConnectModal}
     onNewConnection={handleNewConnection}
+    terminalConnect={terminalConnectFn}
   />
 {/if}
 
