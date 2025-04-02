@@ -40,6 +40,7 @@
 1. **Core Terminal Setup** (Week 1)
    - xterm.js integration (Partially Implemented)
    - Basic SSH connection (Started)
+    - SSH intercative shell (Not Implemented)
 
 2. **MCP Integration** (Week 2)
    - MCP server setup
