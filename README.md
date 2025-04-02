@@ -77,7 +77,7 @@ TermAI consists of three main components:
 1.  Clone the repository:
 
     ```bash
-    git clone [repository URL]
+    git clone [https://github.com/MrAntonS/TermAI]
     ```
 
 2.  Install dependencies:
