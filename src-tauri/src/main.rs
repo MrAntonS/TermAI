@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use ssh2::{Channel, Session};
-use tauri::{AppHandle, Manager, State, Window}; // Added Window
+use tauri::{AppHandle, Manager, State, Window, Emitter}; // Added Window
 use tokio::sync::mpsc;
 use tokio::task;
 // Removed unused tokio::io imports for now
@@ -78,8 +78,8 @@ async fn ssh_connect(
     sess.set_tcp_stream(tcp); // Pass the non-blocking stream
     sess.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
     // Set session non-blocking *after* handshake and auth might be safer
-    sess.set_blocking(false);
-    println!("SSH handshake completed, session set to non-blocking.");
+    println!("SSH handshake completed.");
+    // We will set non-blocking AFTER successful authentication
 
 
     if let Some(pass) = password {
@@ -95,12 +95,14 @@ async fn ssh_connect(
     }
     println!("Authentication successful for user '{}'.", username);
 
+    // Set session non-blocking now that auth is complete
+    // Apply map_err *before* the ? operator
+    // --- Open Channel, Request PTY, Start Shell (in blocking mode) ---
     let mut channel = sess
         .channel_session()
         .map_err(|e| format!("Failed to open channel: {}", e))?;
     println!("Channel opened.");
 
-    // Request PTY - Use None for dimensions tuple for defaults
     channel
         .request_pty("xterm-256color", None, None) // Correct signature
         .map_err(|e| format!("Failed to request PTY: {}", e))?;
@@ -110,6 +112,10 @@ async fn ssh_connect(
         .shell()
         .map_err(|e| format!("Failed to start shell: {}", e))?;
     println!("Shell started.");
+
+    // --- Set Session Non-Blocking (Now that setup is complete) ---
+    sess.set_blocking(false);
+    println!("Session set to non-blocking.");
 
     // Channel blocking mode is less relevant when session is non-blocking
     // channel.set_blocking(false); // Not needed/available on Channel
@@ -134,25 +140,25 @@ async fn ssh_connect(
                     match result {
                         Ok(0) | Ok(_) if reader_channel.eof() => { // Check EOF explicitly
                             println!("SSH channel EOF received or detected.");
-                            // if let Some(window) = &main_window {
-                            //     let _ = window.emit("ssh-closed", SshClosedPayload { message: "Connection closed by remote" });
-                            // } else { eprintln!("Main window not found for ssh-closed event."); }
+                            if let Some(window) = &main_window {
+                                let _ = window.emit("ssh-closed", SshClosedPayload { message: "Connection closed by remote" });
+                            } else { eprintln!("Main window not found for ssh-closed event."); }
                             break;
                         }
                         Ok(n) => {
                             match String::from_utf8(buffer[..n].to_vec()) {
                                 Ok(data_str) => {
-                                    // if let Some(window) = &main_window {
-                                    //     if let Err(e) = window.emit("ssh-output", SshOutputPayload { data: data_str }) {
-                                    //         eprintln!("Failed to emit ssh-output event: {}", e);
-                                    //     }
-                                    // } else { eprintln!("Main window not found for ssh-output event."); }
+                                    if let Some(window) = &main_window {
+                                        if let Err(e) = window.emit("ssh-output", SshOutputPayload { data: data_str }) {
+                                            eprintln!("Failed to emit ssh-output event: {}", e);
+                                        }
+                                    } else { eprintln!("Main window not found for ssh-output event."); }
                                 }
                                 Err(e) => {
                                      eprintln!("SSH received non-UTF8 data: {}", e);
-                                    //  if let Some(window) = &main_window {
-                                    //     //  let _ = window.emit("ssh-error", SshErrorPayload { message: format!("Received non-UTF8 data: {}", e) });
-                                    //  } else { eprintln!("Main window not found for ssh-error event."); }
+                                     if let Some(window) = &main_window {
+                                         let _ = window.emit("ssh-error", SshErrorPayload { message: format!("Received non-UTF8 data: {}", e) });
+                                     } else { eprintln!("Main window not found for ssh-error event."); }
                                 }
                             }
                         }
@@ -162,9 +168,9 @@ async fn ssh_connect(
                         }
                         Err(e) => {
                             eprintln!("Error reading from SSH channel: {}", e);
-                            //  if let Some(window) = &main_window {
-                            //     let _ = window.emit("ssh-error", SshErrorPayload { message: format!("Channel read error: {}", e) });
-                            //  } else { eprintln!("Main window not found for ssh-error event."); }
+                             if let Some(window) = &main_window {
+                                let _ = window.emit("ssh-error", SshErrorPayload { message: format!("Channel read error: {}", e) });
+                             } else { eprintln!("Main window not found for ssh-error event."); }
                             break; // Exit loop on other errors
                         }
                     }
@@ -175,7 +181,7 @@ async fn ssh_connect(
         println!("SSH reader task finished.");
         // Ensure connection is marked as closed if task exits unexpectedly
         if let Some(window) = &main_window {
-            //  let _ = window.emit("ssh-closed", SshClosedPayload { message: "Reader task finished" });
+             let _ = window.emit("ssh-closed", SshClosedPayload { message: "Reader task finished" });
         }
     });
 

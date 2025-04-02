@@ -2,6 +2,7 @@
   // Removed: import { connectOnly } from './DummyConnectionAgent';
   import { v4 as uuidv4 } from 'uuid';
   import { addConnection, type ConnectionDetails, type ActiveConnection } from './ConnectionStore';
+  import { invoke } from '@tauri-apps/api/core'; // Import invoke
 
   // Define the expected props, including callbacks
   type NewConnectionPayload = {
@@ -11,17 +12,16 @@
       details: ConnectionDetails;
       connection_id?: string; // Added to store the connection ID from backend
   };
-  // Update type to expect string (connectionId) or null
-  type TerminalConnectFn = (options: { hostname: string; port: number; username: string; password?: string }) => Promise<string | null>;
+  // Removed TerminalConnectFn type
 
   type $$Props = {
     onClose: () => void; // Callback for closing
     onNewConnection: (payload: NewConnectionPayload) => void; // Callback for new connection
-    terminalConnect: TerminalConnectFn; // Prop to receive the terminal's connect function
+    // Removed terminalConnect prop
   };
 
   // Get props using $props rune
-  const { onClose, onNewConnection, terminalConnect } = $props(); // Get the new prop
+  const { onClose, onNewConnection } = $props(); // Removed terminalConnect
 
   // --- State for the form inputs ---
   // Use $state() for all variables bound to form inputs
@@ -105,26 +105,26 @@
         privateKeyPath,
       };
       
-      console.log('Sending connection details to agent for connect-only:', connectionDetails);
-      
-      // Use the terminal's connect function passed via prop
-      const returnedConnectionId = await terminalConnect({
+      console.log('Invoking connect_ssh command with:', connectionDetails);
+
+      // Directly invoke the Tauri command
+      await invoke('ssh_connect', {
           hostname: connectionDetails.hostname,
           port: connectionDetails.port,
           username: connectionDetails.username,
-          password: connectionDetails.password // Pass password if available
-          // Note: Key-based auth needs implementation in main.rs and Terminal.svelte connect
+          password: connectionDetails.authMethod === 'password' ? connectionDetails.password : null
+          // Key-based auth still needs backend implementation
       });
-      console.log('Terminal connect result (connectionId):', returnedConnectionId);
+      // connect_ssh returns Result<(), String>. If it fails, invoke throws an error caught below.
+      // If it succeeds, we proceed. No connectionId is returned here.
+      console.log('connect_ssh command invoked successfully.');
 
-      if (!returnedConnectionId) {
-          // The terminal component itself should display detailed errors.
-          // We just show a generic failure message here in the modal's context.
-          throw new Error("Connection failed. Check terminal for details.");
-      }
+      // Remove check for returnedConnectionId as it's no longer returned
 
       // If successful, store the returned connectionId and proceed
-      payload.connection_id = returnedConnectionId; // Store the ID in the payload for the callback
+      // payload.connection_id is no longer relevant here as connect_ssh doesn't return one.
+      // Assign a generated ID for the store and callback.
+      payload.connection_id = "ssh:" + payload.id;
       
       // Add to the connections store
       // Add the connection configuration to the store.
@@ -142,7 +142,7 @@
           password: authMethod === 'password' ? password : undefined, // Store password only if method is password
          privateKeyPath: authMethod === 'key' ? privateKeyPath : undefined // Store key path only if method is key
        },
-       connectionId: returnedConnectionId, // Use the ID returned by terminalConnect
+       connectionId: payload.connection_id, // Use the generated ID
        isActive: true // Mark as active since connection succeeded
      });
 
