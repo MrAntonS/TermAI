@@ -63,7 +63,6 @@
 
         // --- Write Initial Content ---
         term.writeln('Welcome to the terminal!');
-        term.write('$ ');
         
                 // --- Handle User Input ---
                 term?.onData(data => {
@@ -71,40 +70,6 @@
                     // Handle backspace/delete
                     term?.write('\x08 \x08'); // Erase character from screen
                   } 
-                  // Remove local echo to prevent duplication when streaming from server
-                  // else {
-                  //   term?.write(data); // Echo back the typed data
-                  // }
-        
-                  if (data === '\r') { // Enter key pressed
-                    // Emulate command execution and response
-                    setTimeout(() => {
-                      if (term) {
-                        // Get the current line content *before* writing the newline response
-                        const currentLineY = term.buffer.active.cursorY;
-                        const commandLine = term.buffer.active.getLine(currentLineY);
-                        // Use translateToString(true) to trim whitespace automatically
-                        const command = commandLine?.translateToString(true).trim();
-
-                        // Write the newline *after* capturing the command
-                        term.write('\r\n');
-
-                        if (command === '$ show ip int br' || command === '$ show ip int brief') {
-                          term.write('Interface      IP-Address   Status      Protocol\r\n');
-                          term.write('GigabitEthernet0/0 192.168.1.1  up          up      \r\n');
-                          term.write('GigabitEthernet0/1 unassigned   administratively down down    \r\n');
-                          term.write('GigabitEthernet0/2 unassigned   administratively down down    \r\n');
-                        } else if (command) { // Check if command is not empty
-                          term.write(`Unknown command: ${command}\r\n`); // More informative default
-                        }
-                        // If command is empty (just Enter pressed), do nothing extra before the prompt
-                      } else {
-                        // Fallback if term is somehow null, though unlikely here
-                         return; // Just return, the prompt is written later if term exists
-                      }
-                      term?.write('$ '); // Write prompt
-                    }, 50); // Slightly reduced timeout
-                  }
                 });
 
         // --- Handle Resize ---
@@ -167,19 +132,12 @@
     return false;
   }
   
-  // Method for handling commands typed into the terminal
+  // Method for handling  commands typed into the terminal
   export function setCommandHandler(handler: (command: string) => Promise<string>) {
     if (term) {
       // Replace the default command handler with the custom one
       term.onData(data => {
-        if (data === '\x08' || data === '\x7F') { // Backspace or Delete
-          // Handle backspace/delete
-          term?.write('\x08 \x08'); // Erase character from screen
-        } 
-        // Remove the local echo to prevent duplication
-        // else {
-        //   term?.write(data); // Echo back the typed data
-        // }
+          term?.write(data); // Echo back the typed data
 
         if (data === '\r') { // Enter key pressed
           // Get the current line content *before* writing the newline response
@@ -206,9 +164,6 @@
             }).catch(error => {
               term.write(`Error: ${error}\r\n$ `);
             });
-          } else {
-            // If just pressing Enter with no command
-            term.write('$ '); // Write prompt
           }
         }
       });
