@@ -14,9 +14,14 @@
   let terminalContainer: HTMLDivElement;
   let term: XtermTerminal | null = null;
   let fitAddon: XtermFitAddon | null = null;
-  let isConnected = false; // Track connection status
-  let statusMessage = 'Initializing...';
-
+  // Remove local isConnected state, derive from store
+  // let isConnected = false;
+  let statusMessage = $state('Initializing...'); // Use $state for reactivity
+ 
+  // Derive connection status and details from the store
+  // Find the connection object from the array using the current ID
+  let currentConnection = $derived($activeConnections.find(conn => conn.id === $currentConnectionId));
+  let isConnected = $derived(!!currentConnection);
   // --- Event Listener Cleanup ---
   let unlistenOutput: UnlistenFn | null = null;
   let unlistenError: UnlistenFn | null = null;
