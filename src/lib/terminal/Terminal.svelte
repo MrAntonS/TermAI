@@ -4,6 +4,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import type { EventCallback, UnlistenFn } from '@tauri-apps/api/event';
+  import { currentConnectionId, activeConnections } from '../Connection Tab/ConnectionStore'; // Import the store
 
   // Type Imports
   import type { Terminal as XtermTerminal, IDisposable } from '@xterm/xterm';
@@ -72,9 +73,13 @@
       // --- Load Addons & Open ---
       term.loadAddon(fitAddon);
       term.open(terminalContainer);
-      statusMessage = 'Terminal Ready. Not Connected.';
-      term.writeln('\x1b[33mWelcome! Please connect to an SSH server.\x1b[0m'); // Yellow text
-
+      // Update status based on derived state initially
+      statusMessage = isConnected ? `Connected to ${currentConnection?.name}` : 'Terminal Ready. Not Connected.';
+      if (!isConnected) {
+        term.writeln('\x1b[33mWelcome! Please select or establish an SSH connection.\x1b[0m'); // Yellow text
+      } else {
+        term.writeln(`\x1b[32mTerminal attached to active connection: ${currentConnection?.name}\x1b[0m`); // Green text
+      }
       // --- Fit Terminal ---
       setTimeout(() => fitAddon?.fit(), 50); // Adjust delay if needed
 
@@ -100,13 +105,12 @@
       const handleError: EventCallback<SshErrorPayload> = (event) => {
         console.error('ssh-error received:', event.payload);
         term?.writeln(`\r\n\x1b[31mSSH Error: ${event.payload.message}\x1b[0m`); // Red error
-        // Optionally update connection status on certain errors
+
       };
       const handleClosed: EventCallback<SshClosedPayload> = (event) => {
         console.log('ssh-closed received:', event.payload);
-        isConnected = false;
-        statusMessage = `Disconnected: ${event.payload.message}`;
-        term?.writeln(`\r\n\x1b[33mConnection closed: ${event.payload.message}\x1b[0m`); // Yellow message
+        statusMessage = `Disconnected`;
+        term?.writeln(`\r\n\x1b[33mConnection closed: ${event.payload.message}\x1b[0m`);
       };
 
       unlistenOutput = await listen('ssh-output', handleOutput);
@@ -115,9 +119,7 @@
 
       console.log("Terminal and event listeners initialized.");
 
-      // Example: Automatically try to connect on mount (remove/modify as needed)
-      // connect('test.rebex.net', 22, 'demo', 'password');
-
+      // No longer need to auto-connect here
     } catch (error) {
       console.error("Failed to load or initialize xterm:", error);
       statusMessage = `Error: ${error}`;
@@ -131,12 +133,15 @@
     console.log("Destroying Terminal component...");
 
     // 1. Disconnect SSH backend if connected
-    if (isConnected) {
+    // Use the derived isConnected state
+    if (isConnected && currentConnection?.connectionId) { // Check if we have an active connection ID
       try {
-        console.log("Attempting to disconnect SSH via Tauri command...");
+        console.log(`Attempting to disconnect SSH connection ${currentConnection.connectionId} via Tauri command...`);
+        // Pass the specific connection ID if your backend disconnect needs it
+        // If disconnect_ssh disconnects the *single* backend connection, no ID is needed.
         await invoke('disconnect_ssh');
         console.log("disconnect_ssh command invoked.");
-        isConnected = false; // Assume disconnect succeeded for cleanup
+        // isConnected will update reactively. No need to set it manually.
       } catch (error) {
         console.error("Error invoking disconnect_ssh:", error);
         // Continue cleanup even if disconnect fails
@@ -169,41 +174,41 @@
     console.log("Terminal component destroyed.");
   });
 
-  // --- Exposed Methods / Connection Handling ---
-  // You'll likely call these from a parent component or UI elements
-  export async function connect(host: string, port: number, user: string, pass: string | null) {
-    if (isConnected) {
-      term?.writeln('\r\n\x1b[33mAlready connected. Disconnect first.\x1b[0m');
-      return;
-    }
-    if (!term) {
-       console.error("Terminal not initialized, cannot connect.");
-       statusMessage = "Error: Terminal not ready";
-       return;
-    }
+  // --- Connection Handling (Reflecting Store State) ---
+  // Remove the connect function as connection is managed externally via QuickConnectModal/ConnectionStore
 
-    term.reset(); // Clear the terminal screen
-    term.writeln(`\x1b[36mConnecting to ${user}@${host}:${port}...\x1b[0m`); // Cyan message
-    statusMessage = `Connecting to ${host}...`;
+  // Use $effect for side effects based on reactive state changes
+  $effect(() => {
+    // This effect runs when isConnected or currentConnection changes,
+    // and also after the component mounts if browser and term are ready.
+    if (browser && term) {
+      const connected = isConnected; // Capture derived value for consistent check within effect
+      const connection = currentConnection; // Capture derived value
 
-    try {
-      await invoke('connect_ssh', {
-        hostname: host,
-        port: port,
-        username: user,
-        password: pass // Pass null if no password (key auth not implemented in backend yet)
-      });
-      isConnected = true;
-      statusMessage = `Connected to ${host}`;
-      term.writeln(`\x1b[32mConnection successful!\x1b[0m`); // Green message
-      term.focus(); // Focus the terminal for input
-    } catch (error) {
-      console.error("SSH Connection failed:", error);
-      isConnected = false;
-      statusMessage = `Connection Failed: ${error}`;
-      term.writeln(`\r\n\x1b[31mConnection Failed: ${error}\x1b[0m`); // Red error
+      if (connected && connection) {
+        // State when connected
+        const newStatus = `Connected to ${connection.name}`;
+        // Update status message and terminal output if the status actually changed
+        if (statusMessage !== newStatus) {
+            statusMessage = newStatus;
+            // Optional: Clear terminal on new connection? Or keep history?
+            // term.reset();
+            term.writeln(`\r\n\x1b[32mAttached to active connection: ${connection.name}\x1b[0m`);
+            term.focus();
+        }
+      } else {
+        // State when not connected
+        const newStatus = 'Not Connected';
+        // Update status message and terminal output if the status actually changed
+        if (statusMessage !== newStatus) {
+            statusMessage = newStatus;
+            // Optional: Clear terminal on disconnect?
+            // term.reset();
+            term.writeln('\r\n\x1b[33mNo active SSH connection.\x1b[0m');
+        }
+      }
     }
-  }
+  });
 
   export async function disconnect() {
     if (!isConnected) {
@@ -228,8 +233,9 @@
       console.error("SSH Disconnection failed:", error);
       statusMessage = `Disconnect Failed: ${error}`;
       term?.writeln(`\r\n\x1b[31mDisconnection Failed: ${error}\x1b[0m`); // Red error
-      // Force state update if command fails but we want to reflect attempt
-      isConnected = false;
+      // isConnected updates reactively. If disconnect fails, the store state won't change,
+      // and isConnected will remain true, which might be the desired behavior (reflecting reality).
+      // If you want to force isConnected to false even on failed disconnect, you'd need to update the store.
     }
   }
 
@@ -302,7 +308,7 @@
 
 <div class="terminal-wrapper">
   <div class="terminal-status-bar">
-    Status: {statusMessage} {isConnected ? '🟢' : '🔴'}
+    Status: {isConnected ? "Connected" : "Not Connected"} {isConnected ? `🟢 (${currentConnection?.name ?? 'Unknown'})` : '🔴'}
   </div>
   <!-- Container where xterm will attach -->
   <div bind:this={terminalContainer} class="terminal-container" tabindex="0"></div>
