@@ -27,7 +27,8 @@
   let unlistenError: UnlistenFn | null = null;
   let unlistenClosed: UnlistenFn | null = null;
   let xtermDataListener: IDisposable | null = null; // For xterm's onData
-
+  let resizeObserver: ResizeObserver | null = null;
+ 
   // --- Payload Types (match Rust structs) ---
   interface SshOutputPayload {
     data: string;
@@ -85,8 +86,8 @@
       } else {
         term.writeln(`\x1b[32mTerminal attached to active connection: ${currentConnection?.name}\x1b[0m`); // Green text
       }
-      // --- Fit Terminal ---
-      setTimeout(() => fitAddon?.fit(), 50); // Adjust delay if needed
+      // --- Fit Terminal (Initial) ---
+      fitTerminal(); // Call immediately after open
 
       // --- Setup Input Handling (Send data to backend) ---
       xtermDataListener = term.onData(async (data) => {
@@ -121,9 +122,22 @@
       unlistenOutput = await listen('ssh-output', handleOutput);
       unlistenError = await listen('ssh-error', handleError);
       unlistenClosed = await listen('ssh-closed', handleClosed);
+console.log("Terminal and event listeners initialized.");
 
-      console.log("Terminal and event listeners initialized.");
+// --- Setup Resize Observer ---
+if (window.ResizeObserver) {
+    resizeObserver = new ResizeObserver(() => {
+        // Debounce or throttle this if performance becomes an issue
+        fitTerminal();
+    });
+    resizeObserver.observe(terminalContainer);
+    console.log("ResizeObserver attached to terminal container.");
+} else {
+    console.warn("ResizeObserver not supported. Terminal resizing may not work automatically.");
+    // Consider adding a fallback, like a manual resize button or window resize listener
+}
 
+// No longer need to auto-connect here
       // No longer need to auto-connect here
     } catch (error) {
       console.error("Failed to load or initialize xterm:", error);
@@ -163,6 +177,10 @@
     xtermDataListener?.dispose();
     console.log("Xterm data listener disposed.");
 
+    // 4. Disconnect ResizeObserver
+    resizeObserver?.disconnect();
+    console.log("ResizeObserver disconnected.");
+
     // 4. Dispose xterm instance
     if (term) {
       term.dispose();
@@ -176,6 +194,7 @@
     unlistenError = null;
     unlistenClosed = null;
     xtermDataListener = null;
+    resizeObserver = null;
     console.log("Terminal component destroyed.");
   });
 
@@ -248,11 +267,15 @@
   export function fitTerminal() {
     try {
         fitAddon?.fit();
-        // Optional: Inform backend about resize if needed (requires backend command)
-        // const dims = term?.proposeDimensions();
-        // if (dims && isConnected) {
-        //   invoke('resize_pty', { cols: dims.cols, rows: dims.rows });
-        // }
+        // Inform backend about resize
+        const dims = fitAddon?.proposeDimensions();
+        // Only send resize if connected and dimensions are valid
+        if (dims && isConnected && currentConnection?.connectionId) {
+            invoke('resize_pty', { cols: dims.cols, rows: dims.rows }).catch(e => {
+                console.error("Failed to invoke resize_pty:", e);
+                // Handle error - maybe the command doesn't exist or failed
+            });
+        }
     } catch (e) {
         console.error("Error fitting terminal:", e);
     }

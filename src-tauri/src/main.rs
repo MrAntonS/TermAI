@@ -65,16 +65,11 @@ fn ssh_io_thread(
     event_sender: Sender<SshEvent>,
 ) {
     println!("SSH I/O thread started.");
-    let mut read_buf = [0u8; 4096];
+    let mut read_buf = [0; 4096];
     let mut write_buf = Vec::new(); // Buffer for accumulating data from Write commands
     let mut should_disconnect = false;
     let write_interval = Duration::from_millis(50); // Send data roughly every 50ms
     let mut last_write_attempt = std::time::Instant::now();
-
-    // Set channel to non-blocking for reads within the thread loop
-    // Session should already be non-blocking from connect logic
-    // Channel needs to be non-blocking for both reads and writes
-    session.set_blocking(false);
 
     loop {
         // 1. Check for incoming commands
