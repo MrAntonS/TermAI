@@ -1,29 +1,55 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-
+  import { invoke } from '@tauri-apps/api/core'; // Import invoke
   let aiTextareaElement: HTMLTextAreaElement;
   let aiContentElement: HTMLDivElement;
   let question = '';
-  let messages: { type: 'user' | 'ai' | 'system' | 'suggestion' | 'explanation', content: string, title?: string }[] = [
+  // Add 'error' type for messages
+  let messages: { type: 'user' | 'ai' | 'system' | 'suggestion' | 'explanation' | 'error', content: string, title?: string }[] = [
     { type: 'system', content: 'AI chat interface initialized. Ready for input.' },
-    { type: 'suggestion', title: 'Suggestion:', content: 'Check interface status: <code>show ip interface brief</code>' },
-    { type: 'explanation', title: 'Explanation:', content: 'OSPF state \'FULL\' means successful adjacency.' }
+    // Example messages removed for brevity, can be added back if needed
+    // { type: 'suggestion', title: 'Suggestion:', content: 'Check interface status: <code>show ip interface brief</code>' },
+    // { type: 'explanation', title: 'Explanation:', content: 'OSPF state \'FULL\' means successful adjacency.' }
   ];
+  let isLoading = false; // Add loading state
 
-  function sendMessage() {
-    if (question.trim() !== '') {
-      messages = [...messages, { type: 'user', content: question }];
-      const aiResponse = `Simulated AI response to: ${question}`;
-      messages = [...messages, { type: 'ai', content: aiResponse }];
-      question = ''; // Clear the textarea
+  async function sendMessage() { // Make function async
+    const userQuestion = question.trim();
+    if (userQuestion === '' || isLoading) {
+      return; // Don't send empty messages or while loading
+    }
 
-      // Scroll to bottom after DOM updates
+    // Add user message immediately
+    messages = [...messages, { type: 'user', content: userQuestion }];
+    question = ''; // Clear input
+    isLoading = true; // Set loading state
+
+    // Scroll after adding user message
+    scrollToBottom();
+
+    try {
+      // Call the backend command
+      const responseText = await invoke<string>('send_to_gemini', { prompt: userQuestion });
+      messages = [...messages, { type: 'ai', content: responseText }];
+    } catch (error) {
+      console.error('Error calling Gemini:', error);
+      const errorMessage = typeof error === 'string' ? error : 'An unknown error occurred.';
+      messages = [...messages, { type: 'error', content: `Error: ${errorMessage}` }];
+    } finally {
+      isLoading = false; // Reset loading state
+      // Scroll after adding AI response or error
+      scrollToBottom();
+    }
+  }
+
+  // Helper function to scroll chat to bottom
+  function scrollToBottom() {
+      // Use timeout to ensure DOM has updated
       setTimeout(() => {
         if (aiContentElement) {
           aiContentElement.scrollTop = aiContentElement.scrollHeight;
         }
       }, 0);
-    }
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -36,7 +62,7 @@
   onMount(() => {
     // Initial scroll to bottom if needed
     if (aiContentElement) {
-      aiContentElement.scrollTop = aiContentElement.scrollHeight;
+      scrollToBottom(); // Use helper function
     }
   });
 
@@ -68,6 +94,8 @@
           <p class="ai-explanation-title">{message.title}</p>
           <p class="ai-explanation-content">{message.content}</p>
         </div>
+      {:else if message.type === 'error'}
+        <div class="ai-message ai-error"><b>System Error:</b> {message.content}</div>
       {/if}
     {/each}
   </div>
@@ -80,7 +108,13 @@
       on:keydown={handleKeydown}
       bind:this={aiTextareaElement}
     ></textarea>
-    <button class="ai-send-button" on:click={sendMessage}>Send</button>
+    <button class="ai-send-button" on:click={sendMessage} disabled={isLoading}>
+      {#if isLoading}
+        <span>Sending...</span>
+      {:else}
+        <span>Send</span>
+      {/if}
+    </button>
   </div>
 </section>
 
@@ -179,6 +213,10 @@
   .ai-message:first-child { /* Style for initial system message */
       font-style: italic;
   }
+  .ai-error { /* Style for error messages */
+      color: #f87171 !important; /* Tailwind red-400 */
+      font-weight: bold;
+  }
 
 
   .ai-suggestion, .ai-explanation {
@@ -248,6 +286,10 @@
 
   .ai-send-button:hover {
     background-color: var(--color-hover-bg);
+  }
+  .ai-send-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   /* Ensure code blocks are styled correctly */
