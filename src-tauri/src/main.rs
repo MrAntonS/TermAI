@@ -3,17 +3,15 @@
     windows_subsystem = "windows"
 )]
 
-use std::io::{self, Read, Write}; // Added io
-use std::net::TcpStream;
+use std::io::{Read, Write}; // Removed BufReader, BufRead
+use std::process::{Command, Stdio, Child, ChildStdin, ChildStdout, ChildStderr};
 use std::sync::{Arc, Mutex};
-use std::thread; // Added thread
+use std::thread;
 use std::time::Duration;
 
-use ssh2::{Channel, Session};
 use tauri::{AppHandle, Manager, State, Window, Emitter};
-use tokio::sync::mpsc::{self, Sender, Receiver}; // Specify mpsc items
+use tokio::sync::mpsc::{self, Sender, Receiver};
 use tokio::task;
-use tokio::time::interval;
 
 // --- Communication Messages ---
 #[derive(Debug)]
@@ -22,26 +20,34 @@ enum SshCommand {
     Disconnect,
 }
 
-#[derive(Debug, Clone, serde::Serialize)] // Clone + Serialize for Tauri events
-enum SshEvent {
-    Data(Vec<u8>), // Send raw bytes, convert to string in frontend or bridge task
-    Error(String),
-    Closed(String),
+// --- Event Payloads --- Keep these as they define the frontend contract
+#[derive(Clone, serde::Serialize)]
+struct SshOutputPayload {
+    data: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct SshErrorPayload {
+    message: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct SshClosedPayload {
+    message: String,
 }
 
 
 // --- State Management ---
 
-// Holds communication channels and thread handle for the dedicated SSH I/O thread
-struct SshThreadHandle {
-    command_sender: Sender<SshCommand>,
-    thread_handle: thread::JoinHandle<()>,
+// Holds the running process handle and communication channel
+struct SshProcessHandle {
+    child: Arc<Mutex<Child>>, // Arc<Mutex<>> for shared access to kill
+    stdin: Arc<Mutex<ChildStdin>>, // Arc<Mutex<>> for shared access to write
+    command_sender: Sender<SshCommand>, // To send write/disconnect commands
 }
 
 struct AppState {
-    // Option because connection might not exist
-    // Arc+Mutex to allow shared access from Tauri commands
-    ssh_handle: Arc<Mutex<Option<SshThreadHandle>>>,
+    ssh_handle: Arc<Mutex<Option<SshProcessHandle>>>,
 }
 
 impl AppState {
@@ -52,177 +58,180 @@ impl AppState {
     }
 }
 
-// --- Event Payloads ---
-// #[derive(Clone, serde::Serialize)]
-// Payloads are now mostly handled by SshEvent, but keep specific ones if needed
-// We'll convert SshEvent::Data to string before emitting if necessary
-// --- SSH I/O Thread ---
-
-fn ssh_io_thread(
-    mut session: Session, // Takes ownership
-    mut channel: Channel, // Takes ownership
-    mut command_receiver: Receiver<SshCommand>,
-    event_sender: Sender<SshEvent>,
-) {
-    println!("SSH I/O thread started.");
-    let mut read_buf = [0; 4096];
-    let mut write_buf = Vec::new(); // Buffer for accumulating data from Write commands
-    let mut should_disconnect = false;
-    let write_interval = Duration::from_millis(50); // Send data roughly every 50ms
-    let mut last_write_attempt = std::time::Instant::now();
-
-    loop {
-        // 1. Check for incoming commands
-        match command_receiver.try_recv() {
-            Ok(SshCommand::Write(data)) => {
-                // Append data to our internal write buffer
-                write_buf.extend_from_slice(&data);
-                // Don't write immediately, let the write logic below handle it
-            }
-            Ok(SshCommand::Disconnect) => {
-                println!("SSH I/O thread received disconnect command.");
-                should_disconnect = true;
-                // Don't break immediately, try to flush remaining writes first
-            }
-            Err(mpsc::error::TryRecvError::Empty) => {
-                // No command, continue
-            }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                println!("SSH I/O thread command channel disconnected. Shutting down.");
-                should_disconnect = true; // Ensure cleanup happens
-                break; // Exit loop
-            }
+// --- Helper function to emit events ---
+fn emit_event<P: serde::Serialize + Clone>(app_handle: &AppHandle, event: &str, payload: P) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        if let Err(e) = window.emit(event, payload) {
+            eprintln!("Failed to emit event '{}': {}", event, e);
         }
+    } else {
+         eprintln!("Event emit failed: Main window not found for event '{}'.", event);
+    }
+}
 
-        // 2. Check if interval elapsed and buffer has data, then attempt write
-        let now = std::time::Instant::now();
-        if !write_buf.is_empty() && now.duration_since(last_write_attempt) >= write_interval {
-            last_write_attempt = now; // Update time even if write fails/blocks
+// --- I/O Handling Threads/Tasks ---
 
-            match channel.write(&write_buf) {
-                 Ok(0) => {
-                     // Should not happen with write, indicates an issue
-                     let msg = "SSH channel write returned 0 unexpectedly (I/O thread).".to_string();
-                     println!("{}", msg);
-                     let _ = event_sender.try_send(SshEvent::Error(msg));
-                     should_disconnect = true; // Ok(0) is usually fatal for write
-                 }
-                 Ok(n) => {
-                     // Data written, remove it from the buffer
-                     //println!("Wrote {} bytes", n); // Debug
-                     write_buf.drain(..n);
-                 }
-                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                     // Cannot write right now, buffer is full or busy.
-                     // Data remains in write_buf, will retry next interval.
-                     //println!("Write would block"); // Debug
-                 }
-                 Err(e) => {
-                     let msg = format!("Error writing to SSH channel (I/O thread): {}", e);
-                     println!("{}", msg);
-                     let _ = event_sender.try_send(SshEvent::Error(msg));
-                     // Don't disconnect immediately on write errors other than Ok(0)
-                     should_disconnect = true;
-                 }
-             }
-             // Attempt to flush after writing attempt (regardless of success/block)
-             match channel.flush() {
-                 Ok(_) => {} // Flush successful or nothing to flush
-                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {} // Flush would block, okay
-                 Err(e) => {
-                      let msg = format!("Error flushing SSH channel (I/O thread): {}", e);
-                      println!("{}", msg);
-                      let _ = event_sender.try_send(SshEvent::Error(msg));
-                      // Don't necessarily disconnect on flush error, maybe recoverable
+// Task to read stdout and emit events (using raw bytes)
+fn spawn_stdout_reader(app_handle: AppHandle, mut stdout: ChildStdout) {
+    thread::spawn(move || {
+        println!("SSH stdout reader thread started.");
+        let mut buffer = [0; 4096]; // Read in chunks
+        loop {
+            match stdout.read(&mut buffer) {
+                Ok(0) => {
+                    // EOF reached
+                    println!("SSH stdout EOF reached.");
+                    break;
+                }
+                Ok(n) => {
+                    // Successfully read n bytes
+                    // Attempt to convert to UTF-8. Handle invalid sequences gracefully.
+                    let data_str = String::from_utf8_lossy(&buffer[..n]).to_string();
+                    emit_event(&app_handle, "ssh-output", SshOutputPayload { data: data_str });
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    // Interrupted by signal, try again
+                    continue;
+                }
+                Err(e) => {
+                    // Other read error
+                    let msg = format!("Error reading SSH stdout: {}", e);
+                    eprintln!("{}", msg);
+                    emit_event(&app_handle, "ssh-error", SshErrorPayload { message: msg });
+                    break;
                 }
             }
         }
+        println!("SSH stdout reader thread finished.");
+        // Optionally emit closed event here if needed, though wait_handler covers process exit
+    });
+}
 
-        // 3. Attempt to read data
-        match channel.read(&mut read_buf) {
-            Ok(0) if channel.eof() => {
-                println!("SSH channel EOF detected (I/O thread).");
-                let _ = event_sender.try_send(SshEvent::Closed("Connection closed by remote".to_string()));
-                should_disconnect = true; // Ensure cleanup
-                break; // Exit loop
-            }
-            Ok(0) => {
-                 // Read 0 bytes but not EOF? Should not happen with non-blocking read.
-                 // Could indicate a closed channel without EOF. Treat as closed.
-                 println!("SSH channel read 0 bytes but not EOF (I/O thread). Treating as closed.");
-                 let _ = event_sender.try_send(SshEvent::Closed("Connection closed unexpectedly".to_string()));
-                 should_disconnect = true;
-                 break;
-            }
-            Ok(n) => {
-                // Send raw bytes back
-                let _ = event_sender.try_send(SshEvent::Data(read_buf[..n].to_vec()));
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                // Nothing to read right now
-            }
-            Err(e) => {
-                let msg = format!("Error reading from SSH channel (I/O thread): {}", e);
-                println!("{}", msg);
-                let _ = event_sender.try_send(SshEvent::Error(msg));
-                // Don't disconnect immediately on read errors other than EOF/unexpected close
-                should_disconnect = true;
-                break;
+// Task to read stderr and emit events (using raw bytes)
+fn spawn_stderr_reader(app_handle: AppHandle, mut stderr: ChildStderr) {
+    thread::spawn(move || {
+        println!("SSH stderr reader thread started.");
+        let mut buffer = [0; 1024]; // Smaller buffer for stderr often okay
+        loop {
+            match stderr.read(&mut buffer) {
+                Ok(0) => {
+                    // EOF reached
+                    println!("SSH stderr EOF reached.");
+                    break;
+                }
+                Ok(n) => {
+                    // Successfully read n bytes
+                    let error_msg = String::from_utf8_lossy(&buffer[..n]).to_string();
+                    let msg = format!("SSH stderr: {}", error_msg);
+                    eprintln!("{}", msg); // Log locally
+                    emit_event(&app_handle, "ssh-error", SshErrorPayload { message: msg });
+                }
+                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    // Interrupted by signal, try again
+                    continue;
+                }
+                Err(e) => {
+                    // Other read error
+                    let msg = format!("Error reading SSH stderr: {}", e);
+                    eprintln!("{}", msg);
+                    // Optionally emit error event, but might be redundant if process exits
+                    // emit_event(&app_handle, "ssh-error", SshErrorPayload { message: msg });
+                    break;
+                }
             }
         }
+        println!("SSH stderr reader thread finished.");
+    });
+}
 
-        // 4. Check if we need to disconnect and exit
-        if should_disconnect {
-            // If disconnect was requested or an error occurred, exit loop
-            break;
+// Task to handle commands (Write, Disconnect)
+fn spawn_command_handler(
+    app_handle: AppHandle,
+    state_clone: Arc<Mutex<Option<SshProcessHandle>>>,
+    mut command_receiver: Receiver<SshCommand>,
+    child_arc: Arc<Mutex<Child>>,
+    stdin_arc: Arc<Mutex<ChildStdin>>,
+) {
+    tokio::spawn(async move {
+        println!("SSH command handler task started.");
+        while let Some(command) = command_receiver.recv().await {
+            match command {
+                SshCommand::Write(data) => {
+                    let mut stdin_guard = stdin_arc.lock().unwrap();
+                    if let Err(e) = stdin_guard.write_all(&data) {
+                        let msg = format!("Error writing to SSH stdin: {}", e);
+                        eprintln!("{}", msg);
+                        emit_event(&app_handle, "ssh-error", SshErrorPayload { message: msg });
+                    } else {
+                         if let Err(e) = stdin_guard.flush() {
+                             let msg = format!("Error flushing SSH stdin: {}", e);
+                             eprintln!("{}", msg);
+                             emit_event(&app_handle, "ssh-error", SshErrorPayload { message: msg });
+                         }
+                    }
+                    drop(stdin_guard);
+                }
+                SshCommand::Disconnect => {
+                    println!("Command handler received disconnect.");
+                    let mut child_guard = child_arc.lock().unwrap();
+                    if let Err(e) = child_guard.kill() {
+                        let msg = format!("Failed to kill SSH process: {}", e);
+                        eprintln!("{}", msg);
+                        emit_event(&app_handle, "ssh-error", SshErrorPayload { message: msg });
+                    } else {
+                        println!("SSH process kill signal sent.");
+                    }
+                    drop(child_guard);
+
+                    let mut state_guard = state_clone.lock().unwrap();
+                    if state_guard.is_some() {
+                        *state_guard = None;
+                        println!("SSH handle removed from state by command handler.");
+                    }
+                    break;
+                }
+            }
         }
-
-        // 5. Prevent busy-looping if nothing happened
-        // Only sleep if no commands were received and no read/write occurred (or would block)
-        // A more sophisticated approach might use `select!` on channel + command receiver if they were async,
-        // but here we are in a sync thread.
-        thread::sleep(Duration::from_millis(10)); // Small sleep
-    }
-
-    // --- Cleanup ---
-    println!("SSH I/O thread shutting down...");
-    // Ensure command receiver is drained/closed (happens when `command_receiver` goes out of scope)
-    // Ensure event sender is usable until the end (also dropped when out of scope)
-
-    // Attempt graceful shutdown of the SSH channel
-    let _ = channel.send_eof();
-    let _ = channel.wait_eof(); // These might block briefly
-    let _ = channel.close();
-    let _ = channel.wait_close(); // These might block briefly
-    println!("SSH channel closed (I/O thread).");
-
-    // Session disconnect happens implicitly when `session` is dropped here.
-    // We might want to explicitly call session.disconnect, but drop is usually sufficient.
-    // let _ = session.disconnect(None, "Disconnecting", None);
-
-    // Send a final closed event if not already sent due to EOF/Error
-    // Use try_send as the receiver might have already dropped in the Tokio task
-    let _ = event_sender.try_send(SshEvent::Closed("SSH I/O thread finished".to_string()));
-
-    println!("SSH I/O thread finished.");
+        println!("SSH command handler task finished.");
+    });
 }
 
+// Task to wait for the child process to exit
+fn spawn_wait_handler(
+    app_handle: AppHandle,
+    state_clone: Arc<Mutex<Option<SshProcessHandle>>>,
+    child_arc: Arc<Mutex<Child>>,
+) {
+    tokio::spawn(async move {
+        println!("SSH wait handler task started.");
+        let child_id = {
+            let mut guard = child_arc.lock().unwrap();
+            guard.id()
+        };
+        println!("Waiting on SSH process ID: {}", child_id);
 
-// --- Tauri Commands ---
+        let status = {
+             let mut child_guard = child_arc.lock().unwrap();
+             match child_guard.wait() {
+                 Ok(s) => s,
+                 Err(e) => {
+                     eprintln!("Error waiting for SSH process exit: {}", e);
+                     return;
+                 }
+             }
+        };
 
-#[derive(Clone, serde::Serialize)]
-struct SshOutputPayload {
-    data: String, // Keep this for string conversion
-}
+        println!("SSH process exited with status: {}", status);
+        let exit_message = format!("Connection closed. Exit status: {}", status);
+        emit_event(&app_handle, "ssh-closed", SshClosedPayload { message: exit_message });
 
-#[derive(Clone, serde::Serialize)]
-struct SshErrorPayload {
-    message: String,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct SshClosedPayload { // Removed lifetime 'a
-    message: String, // Use owned String
+        let mut state_guard = state_clone.lock().unwrap();
+        if state_guard.is_some() {
+            *state_guard = None;
+            println!("SSH handle removed from state by wait handler.");
+        }
+         println!("SSH wait handler task finished.");
+    });
 }
 
 
@@ -230,171 +239,115 @@ struct SshClosedPayload { // Removed lifetime 'a
 
 #[tauri::command]
 async fn ssh_connect(
-    app_handle: AppHandle, // Need AppHandle to emit events
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     hostname: String,
     port: u16,
     username: String,
-    password: Option<String>,
+    password: Option<String>, // Re-enabled password parameter
 ) -> Result<(), String> {
     println!(
-        "Attempting SSH connection to {}@{}:{}",
+        "Attempting SSH connection via subprocess to {}@{}:{}",
         username, hostname, port
     );
 
     // Disconnect any existing session first
-    disconnect_ssh_internal(&state).await?; // Pass the State wrapper
+    disconnect_ssh_internal(&state).await?;
 
-    // --- Blocking Network I/O for Setup ---
-    // It's often simpler to do the initial connect/auth blocking.
-    // Wrap in spawn_blocking if this causes issues in your async context.
-    let (sess, channel) = tokio::task::spawn_blocking(move || -> Result<(Session, Channel), String> {
-        let tcp = TcpStream::connect(format!("{}:{}", hostname, port))
-            .map_err(|e| format!("TCP connection failed: {}", e))?;
-        // Keep TCP blocking for setup
-        // tcp.set_nonblocking(true).map_err(|e| format!("Failed to set TCP non-blocking: {}", e))?;
-        println!("TCP connection established.");
-
-        let mut sess = Session::new().map_err(|e| format!("Failed to create session: {}", e))?;
-        sess.set_tcp_stream(tcp);
-        sess.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
-        println!("SSH handshake completed.");
-
-
-        if let Some(pass) = password {
-            sess.userauth_password(&username, &pass)
-                .map_err(|e| format!("Password authentication failed: {}", e))?;
-            println!("Password authentication successful.");
-        } else {
-            // Add support for key-based auth here if needed
-            return Err("Password authentication is required (key auth not implemented).".to_string());
+    // --- Build the command (using sshpass if password is provided) ---
+    let mut command = if let Some(pass) = password {
+        if pass.is_empty() {
+            return Err("Password provided but is empty.".to_string());
         }
+        println!("Using sshpass for password authentication.");
+        let mut cmd = Command::new("sshpass");
+        cmd.arg("-p")
+           .arg(pass) // Pass the password to sshpass
+           .arg("ssh") // Command to run
+           .arg(format!("{}@{}", username, hostname))
+           .arg("-p")
+           .arg(port.to_string())
+           // Removed StrictHostKeyChecking options
+           .arg("-tt"); // Force pseudo-terminal allocation - IMPORTANT for interactive shells
+        cmd
+    } else {
+        // No password provided, attempt key-based/agent authentication
+        println!("Attempting key-based/agent authentication (no password provided).");
+        let mut cmd = Command::new("ssh");
+        cmd.arg(format!("{}@{}", username, hostname))
+           .arg("-p")
+           .arg(port.to_string())
+           .arg("-tt"); // Force pseudo-terminal allocation
+        cmd
+    };
 
-        if !sess.authenticated() {
-            return Err("Authentication failed".to_string());
-        }
-        println!("Authentication successful for user '{}'.", username);
+    // Configure stdio for the command (either ssh or sshpass)
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-        // --- Open Channel, Request PTY, Start Shell ---
-        let mut channel = sess
-            .channel_session()
-            .map_err(|e| format!("Failed to open channel: {}", e))?;
-        println!("Channel opened.");
 
-        // Request PTY
-        channel
-            .request_pty("xterm-256color", None, None) // Use appropriate term
-            .map_err(|e| format!("Failed to request PTY: {}", e))?;
-        println!("PTY requested.");
+    // --- Spawn the process ---
+    let mut child = command.spawn()
+        .map_err(|e| format!("Failed to spawn command: {}. Is sshpass installed if using password?", e))?;
 
-        // Start Shell
-        channel
-            .shell()
-            .map_err(|e| format!("Failed to start shell: {}", e))?;
-        println!("Shell started.");
+    println!("SSH process spawned with ID: {}", child.id());
 
-        // Set session non-blocking *before* spawning thread
-        // The thread will set the channel non-blocking internally for reads
-        sess.set_blocking(false);
-        println!("Session set to non-blocking.");
-
-        Ok((sess, channel))
-    }).await.map_err(|e| format!("Blocking task failed: {}", e))??; // Join + unwrap Result
+    // --- Extract stdio handles ---
+    let stdin = child.stdin.take().ok_or("Failed to get stdin handle".to_string())?;
+    let stdout = child.stdout.take().ok_or("Failed to get stdout handle".to_string())?;
+    let stderr = child.stderr.take().ok_or("Failed to get stderr handle".to_string())?;
 
     // --- Setup Communication Channels ---
-    let (command_tx, command_rx) = mpsc::channel::<SshCommand>(32); // Channel for sending commands to I/O thread
-    let (event_tx, mut event_rx) = mpsc::channel::<SshEvent>(128); // Channel for receiving events from I/O thread
+    let (command_tx, command_rx) = mpsc::channel::<SshCommand>(32);
 
-    // --- Spawn Dedicated I/O Thread ---
-    let thread_handle = thread::spawn(move || {
-        // This thread owns session and channel now
-        ssh_io_thread(sess, channel, command_rx, event_tx);
-    });
-    println!("SSH I/O thread spawned.");
+    // --- Wrap handles in Arc<Mutex<>> for sharing ---
+    let child_arc = Arc::new(Mutex::new(child));
+    let stdin_arc = Arc::new(Mutex::new(stdin));
 
-    // --- Spawn Tokio Task to Bridge Events to Tauri ---
-    let event_app_handle = app_handle.clone();
-    let event_state_clone = Arc::clone(&state.ssh_handle); // Clone Arc<Mutex<Option<SshThreadHandle>>>
-    task::spawn(async move {
-        println!("Tauri event bridge task started.");
-        while let Some(event) = event_rx.recv().await {
-            let main_window = event_app_handle.get_webview_window("main");
-            if main_window.is_none() {
-                 eprintln!("Event bridge: Main window not found. Cannot emit event: {:?}", event);
-                 continue;
-            }
-            let window = main_window.unwrap();
+    // --- Spawn I/O and management tasks ---
+    let state_clone = Arc::clone(&state.ssh_handle);
+    let handle_clone = app_handle.clone();
+    spawn_stdout_reader(handle_clone, stdout); // Updated reader
 
-            match event {
-                SshEvent::Data(bytes) => {
-                    // Attempt to convert to UTF-8, send error if fails
-                    match String::from_utf8(bytes) {
-                        Ok(data_str) => {
-                            if let Err(e) = window.emit("ssh-output", SshOutputPayload { data: data_str }) {
-                                eprintln!("Failed to emit ssh-output event: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            let msg = format!("Received non-UTF8 data: {}", e);
-                            eprintln!("{}", msg);
-                            let _ = window.emit("ssh-error", SshErrorPayload { message: msg });
-                        }
-                    }
-                }
-                SshEvent::Error(msg) => {
-                    eprintln!("SSH Error Event: {}", msg);
-                    let _ = window.emit("ssh-error", SshErrorPayload { message: msg });
-                }
-                SshEvent::Closed(msg) => {
-                    println!("SSH Closed Event: {}", msg);
-                    let _ = window.emit("ssh-closed", SshClosedPayload { message: msg.clone() }); // Clone msg
+    let handle_clone = app_handle.clone();
+    spawn_stderr_reader(handle_clone, stderr); // Updated reader
 
-                    // Important: Since the connection is closed from the I/O thread's perspective,
-                    // we should ensure the state in AppState reflects this.
-                    // We attempt to remove the handle here. This might race with explicit disconnect,
-                    // but helps clean up if the connection drops unexpectedly.
-                    println!("Event bridge attempting to clear state due to Closed event.");
-                    if let Ok(mut guard) = event_state_clone.lock() {
-                        if let Some(handle_data) = guard.take() {
-                             println!("SSH handle removed from state by event bridge.");
-                             // We don't join the thread here, just remove the handle
-                        } else {
-                             println!("State already cleared when processing Closed event.");
-                        }
-                    } else {
-                        eprintln!("Event bridge failed to lock state to clear handle after Closed event.");
-                    }
-                    break; // Stop the event bridge task as the connection is closed
-                }
-            }
-        }
-        println!("Tauri event bridge task finished.");
-    });
-    println!("Tauri event bridge task spawned.");
+    let handle_clone = app_handle.clone();
+    let child_clone_cmd = Arc::clone(&child_arc);
+    let stdin_clone_cmd = Arc::clone(&stdin_arc);
+    let state_clone_cmd = Arc::clone(&state.ssh_handle);
+    spawn_command_handler(handle_clone, state_clone_cmd, command_rx, child_clone_cmd, stdin_clone_cmd);
+
+    let handle_clone = app_handle.clone();
+    let child_clone_wait = Arc::clone(&child_arc);
+    let state_clone_wait = Arc::clone(&state.ssh_handle);
+    spawn_wait_handler(handle_clone, state_clone_wait, child_clone_wait);
+
 
     // --- Store Handle in State ---
-    { // Scope for mutex guard
+    {
         let mut handle_guard = state.ssh_handle.lock().map_err(|_| "Failed to lock state mutex".to_string())?;
-        *handle_guard = Some(SshThreadHandle {
+        *handle_guard = Some(SshProcessHandle {
+            child: child_arc,
+            stdin: stdin_arc,
             command_sender: command_tx,
-            thread_handle,
         });
-    } // Mutex guard dropped here
+    }
 
-    println!("SSH connection process completed successfully.");
+    println!("SSH connection process setup completed successfully.");
     Ok(())
 }
 
 #[tauri::command]
 async fn write_to_ssh(state: State<'_, AppState>, data: String) -> Result<(), String> {
-    let command_sender = { // Scope to hold the lock guard briefly
+    let command_sender = {
         let guard = state.ssh_handle.lock().map_err(|_| "Failed to lock state mutex".to_string())?;
-        // Clone the sender if a connection exists
         guard.as_ref().map(|handle| handle.command_sender.clone())
     };
 
     if let Some(sender) = command_sender {
-        // Send the write command asynchronously
         sender
             .send(SshCommand::Write(data.into_bytes()))
             .await
@@ -407,61 +360,33 @@ async fn write_to_ssh(state: State<'_, AppState>, data: String) -> Result<(), St
 #[tauri::command]
 async fn disconnect_ssh(state: State<'_, AppState>) -> Result<(), String> {
     println!("Disconnect command received.");
-    // Call the internal async function, passing the State directly
     disconnect_ssh_internal(&state).await
 }
 
-// Make internal function async as it interacts with async channels and potentially waits
+// Internal disconnect logic
 async fn disconnect_ssh_internal(state: &AppState) -> Result<(), String> {
-    println!("Attempting to disconnect SSH...");
+    println!("Attempting to disconnect SSH process...");
 
-    // 1. Lock the state and take the handle
-    let handle_to_disconnect = { // Scope for mutex guard
+    let command_sender = {
         let mut guard = state.ssh_handle.lock().map_err(|_| "Failed to lock state mutex for disconnect".to_string())?;
-        guard.take() // Takes the Option<SshThreadHandle>, leaving None
+        guard.take().map(|handle| handle.command_sender)
     };
 
-    // 2. If a handle exists, send disconnect command and join the thread
-    if let Some(handle) = handle_to_disconnect {
+    if let Some(sender) = command_sender {
         println!("Found active SSH handle. Sending disconnect command...");
-
-        // Send the disconnect command (fire and forget, thread will handle cleanup)
-        // Ignore error if channel is already closed (thread might have terminated)
-        let _ = handle.command_sender.send(SshCommand::Disconnect).await;
-        println!("Disconnect command sent to I/O thread.");
-
-        // 3. Wait for the I/O thread to finish (blocking operation)
-        // Use spawn_blocking to avoid blocking the async runtime
-        println!("Waiting for SSH I/O thread to join...");
-        let join_result = task::spawn_blocking(move || {
-            handle.thread_handle.join()
-        }).await;
-
-        match join_result {
-            Ok(Ok(_)) => {
-                println!("SSH I/O thread joined successfully.");
-                Ok(())
-            }
-            Ok(Err(e)) => {
-                // The thread panicked
-                eprintln!("SSH I/O thread panicked: {:?}", e);
-                Err("SSH I/O thread panicked during shutdown.".to_string())
-            }
-            Err(e) => {
-                // The spawn_blocking task itself failed (rare)
-                eprintln!("Failed to join SSH I/O thread task: {}", e);
-                Err(format!("Failed to join SSH I/O thread: {}", e))
-            }
-        }
+        let _ = sender.send(SshCommand::Disconnect).await;
+        println!("Disconnect command sent to command handler.");
     } else {
         println!("No active SSH connection found to disconnect.");
-        Ok(()) // No connection, so disconnect is trivially successful
     }
+
+    Ok(())
 }
+
 
 // --- Main Application Setup ---
 fn main() {
-    let app_state = AppState::new(); // Creates Arc<Mutex<Option<SshSessionData>>>
+    let app_state = AppState::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
