@@ -110,6 +110,7 @@
       };
       const handleError: EventCallback<SshErrorPayload> = (event) => {
         console.error('ssh-error received:', event.payload);
+        term?.reset();
         term?.writeln(`\r\n\x1b[31mSSH Error: ${event.payload.message}\x1b[0m`); // Red error
 
       };
@@ -227,7 +228,7 @@ if (window.ResizeObserver) {
         if (statusMessage !== newStatus) {
             statusMessage = newStatus;
             // Optional: Clear terminal on disconnect?
-            // term.reset();
+            term?.reset(); // Clear the terminal when disconnected
             term.writeln('\r\n\x1b[33mNo active SSH connection.\x1b[0m');
         }
       }

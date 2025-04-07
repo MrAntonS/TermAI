@@ -117,14 +117,16 @@
     Quick Connect
   </button>
 
+  <!-- Connections list (tabs) commented out -->
+  <!--
   <h2 class="text-xs font-semibold uppercase text-gray-400 tracking-wide mb-2 pl-2">Connections</h2>
   <div class="flex-grow overflow-y-auto pr-2 -mr-2">
     {#each connections as connection (connection.id)}
       <a href="#"
-         class="flex items-center p-2 rounded-md text-sm font-medium 
-                {$currentConnectionId === connection.id 
-                  ? 'bg-gray-700 text-white' 
-                  : 'text-gray-300 hover:bg-gray-700 hover:text-white'} 
+         class="flex items-center p-2 rounded-md text-sm font-medium
+                {$currentConnectionId === connection.id
+                  ? 'bg-gray-700 text-white'
+                  : 'text-gray-300 hover:bg-gray-700 hover:text-white'}
                 group"
          onclick={() => selectConnection(connection)}
          ondblclick={() => startEditing(connection)}
@@ -134,10 +136,10 @@
         {#if editingConnectionId === connection.id}
           <input
             type="text"
-            bind:this={inputElement} 
-            bind:value={editingName}  
-            onblur={saveEdit}         
-            onkeydown={handleInputKeyDown} 
+            bind:this={inputElement}
+            bind:value={editingName}
+            onblur={saveEdit}
+            onkeydown={handleInputKeyDown}
             class="flex-grow bg-gray-600 text-white text-sm p-0 border border-blue-400 rounded outline-none focus:ring-1 focus:ring-blue-300"
             autocomplete="off"
           />
@@ -153,6 +155,7 @@
       </div>
     {/if}
   </div>
+  -->
 </aside>
 
 {#if isModalOpen}
