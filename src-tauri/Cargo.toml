@@ -24,3 +24,5 @@ log = "0.4"
 tauri = { version = "2.4.0", features = [] }
 tauri-plugin-log = "2.0.0-rc"
 tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] } # Add reqwest for HTTP requests
+dotenvy = "0.15" # Add dotenvy for loading .env files

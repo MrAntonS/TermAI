@@ -13,6 +13,8 @@ use tauri::{AppHandle, Manager, State, Window, Emitter};
 use tokio::sync::mpsc::{self, Sender, Receiver};
 use tokio::task;
 
+mod gemini_api; // Add the new module
+
 // --- Communication Messages ---
 #[derive(Debug)]
 enum SshCommand {
@@ -386,6 +388,10 @@ async fn disconnect_ssh_internal(state: &AppState) -> Result<(), String> {
 
 // --- Main Application Setup ---
 fn main() {
+    // Load environment variables from .env file in src-tauri directory
+    // It's okay if the file doesn't exist or fails to load.
+    dotenvy::dotenv().ok();
+
     let app_state = AppState::new();
 
     tauri::Builder::default()
@@ -394,7 +400,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             ssh_connect,
             write_to_ssh,
-            disconnect_ssh
+            disconnect_ssh,
+            gemini_api::send_to_gemini // Register the new command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
