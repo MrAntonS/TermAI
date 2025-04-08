@@ -3,7 +3,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import type Terminal from '../terminal/Terminal.svelte';
   // Import prompt generation functions
-  import { getInitialPrompt, getPromptAfterAcceptedCommand, getPromptAfterRejectedCommand, getContinuationPrompt } from './prompts';
+  import { getPromptAfterAcceptedCommand, getPromptAfterRejectedCommand, getContinuationPrompt, getInitialPrompt } from './prompts';
+  import './AIAgent.css'; // Import the CSS file
 
   // --- Props ---
   export let terminalInstance: Terminal | null = null; // Prop to receive Terminal instance
@@ -16,6 +17,12 @@
   type MessageType = 'user' | 'ai' | 'system' | 'suggestion' | 'explanation' | 'error' | 'debug' | 'confirmation';
   // Add optional 'thinking' field for AI messages
   type Message = { type: MessageType, content: string, thinking?: string, title?: string, commands?: string[], onAccept?: () => void, onReject?: () => void };
+  // Define a type for the confirmation result
+  type ConfirmationResult = {
+      accepted: boolean;
+      reason?: string | null; // Reason is optional and only present on rejection
+  };
+
   let messages: Message[] = [
     { type: 'system', content: 'AI chat interface initialized. Ready for input.' },
     // Example messages removed for brevity
@@ -23,13 +30,32 @@
   let isLoading = false; // Add loading state
   let pendingCommands: string[] = []; // Commands awaiting confirmation
   let showConfirmation = false; // Flag to show confirmation UI (Now managed via message type)
-  let confirmationResolve: ((accepted: boolean) => void) | null = null; // To resolve the confirmation promise
+  let confirmationPromiseResolver: ((result: ConfirmationResult) => void) | null = null; // Updated resolver type
   let isWaitingForUser = false; // Flag to indicate AI is waiting for user input
-
+  let cancelRequested = false; // Flag to indicate user requested cancellation
+  
   const MAX_AI_STEPS = 5; // Safety limit for interaction loop
   async function sendMessage() {
     const userQuestion = question.trim();
     if (userQuestion === '' || isLoading) return; // Don't send empty or while processing
+
+    // --- Handle Rejection via Message Input ---
+    if (confirmationPromiseResolver) {
+        console.log(`AI Agent: sendMessage called while confirmation active. User input: "${userQuestion}"`);
+        // Remove the confirmation message visually
+        messages = messages.filter(msg => msg.type !== 'confirmation');
+        // Resolve the promise with rejection and the user's message as the reason
+        console.log("AI Agent: Resolving confirmation as rejected with reason:", userQuestion);
+        confirmationPromiseResolver({ accepted: false, reason: userQuestion });
+        confirmationPromiseResolver = null; // Clear the resolver
+        question = ''; // Clear the input field
+        scrollToBottom(); // Update UI
+        // Stop further execution in sendMessage as this input was a rejection reason
+        console.log("AI Agent: Rejection processed, returning from sendMessage.");
+        return;
+    }
+    // Add a log to confirm when normal flow proceeds
+    console.log("AI Agent: sendMessage proceeding with normal message flow (confirmation not active).");
 
     // --- Resume Interaction if AI was Waiting ---
     if (isWaitingForUser) {
@@ -83,8 +109,9 @@
 
     question = '';
     isLoading = true;
+    cancelRequested = false; // Reset cancellation flag for new request
     scrollToBottom();
-
+    
     // --- Get Initial Terminal Context ---
     let initialTerminalContent: string[] = [];
     if (terminalInstance) {
@@ -135,10 +162,49 @@
         messages = [...messages, { type: 'error', content: `Max interaction steps (${MAX_AI_STEPS}) reached. Stopping.` }];
         scrollToBottom();
         throw new Error("Max interaction steps reached."); // Stop the loop
+        isLoading=false;
     }
 
     console.log(`AI Agent: Step ${step + 1} - Sending prompt:`, prompt);
-    const rawResponse = await invoke<string>('send_to_gemini', { prompt: prompt });
+    let rawResponse: string | null = null;
+    try {
+        rawResponse = await invoke<string>('send_to_gemini', { prompt: prompt });
+    } catch (error) {
+        // Handle potential errors during invoke itself (e.g., network issues, backend error)
+        if (!cancelRequested) { // Only show error if not cancelled
+            console.error(`AI Agent: Step ${step + 1} - Error invoking send_to_gemini:`, error);
+            const invokeErrorMsg = typeof error === 'string' ? error : 'Failed to communicate with the AI backend.';
+            messages = [...messages, { type: 'error', content: `Backend Error: ${invokeErrorMsg}` }];
+            isLoading = false;
+            scrollToBottom();
+        } else {
+            console.log(`AI Agent: Step ${step + 1} - Invoke failed after cancellation request.`);
+            // Already handled cancellation flow below
+        }
+        // Whether cancelled or not, if invoke fails, we stop this loop iteration.
+        // isLoading is reset in the cancel flow or the error flow.
+        return; // Stop processing this step
+    }
+
+    // --- Check for Cancellation ---
+    if (cancelRequested) {
+        console.log(`AI Agent: Step ${step + 1} - Cancellation requested. Discarding response.`);
+        messages = [...messages, { type: 'system', content: 'AI request cancelled by user.' }];
+        isLoading = false;
+        cancelRequested = false; // Reset flag
+        scrollToBottom();
+        return; // Stop the loop iteration
+    }
+
+    // Ensure rawResponse is not null before proceeding (shouldn't be if no error/cancellation)
+    if (rawResponse === null) {
+         console.error(`AI Agent: Step ${step + 1} - Raw response is unexpectedly null after invoke.`);
+         messages = [...messages, { type: 'error', content: 'Internal error: Received null response.' }];
+         isLoading = false;
+         scrollToBottom();
+         return; // Stop loop
+    }
+
     console.log(`AI Agent: Step ${step + 1} - Received raw response:`, rawResponse);
 
     // --- Add Debug Message for Raw AI Response ---
@@ -195,10 +261,11 @@
 
         if (extractedCommands.length > 0 && terminalInstance) {
             // --- Show Confirmation ---
-            const accepted = await promptForCommandConfirmation(extractedCommands);
+            const confirmationResult = await promptForCommandConfirmation(extractedCommands);
 
-            if (accepted) {
+            if (confirmationResult.accepted) {
                 // --- User Accepted ---
+                isLoading = true; // Set loading before execution
                 messages = [...messages, { type: 'system', content: `Executing command(s):\n\`\`\`\n${extractedCommands.join('\n')}\n\`\`\`` }];
                 scrollToBottom();
 
@@ -236,7 +303,8 @@
 
             } else {
                 // --- User Rejected ---
-                messages = [...messages, { type: 'system', content: 'User rejected the proposed command(s).' }];
+                isLoading = true; // Set loading before continuing loop
+                messages = [...messages, { type: 'system', content: `User rejected the proposed command(s). ${confirmationResult.reason ? `Reason: ${confirmationResult.reason}` : ''}` }];
                 scrollToBottom();
 
                 // Construct next prompt indicating rejection
@@ -252,8 +320,8 @@
 
                 const nextTerminalContext = currentTerminalContent.slice(-10).join('\n');
                 // Use imported function to generate the prompt after rejected commands
-                const nextPrompt = getPromptAfterRejectedCommand(nextTerminalContext);
-                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after rejected commands):\n---\n` + nextPrompt + "\n---");
+                const nextPrompt = getPromptAfterRejectedCommand(nextTerminalContext, confirmationResult.reason); // Pass the reason
+                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after rejected commands, reason: ${confirmationResult.reason}):\n---\n` + nextPrompt + "\n---");
                 await runAIInteractionLoop(nextPrompt, step + 1); // Continue loop
             }
             return; // Stop further processing in this step as the loop was continued recursively
@@ -337,10 +405,11 @@
   }
 
   // --- Command Confirmation Logic ---
-  function promptForCommandConfirmation(commandsToConfirm: string[]): Promise<boolean> {
+  function promptForCommandConfirmation(commandsToConfirm: string[]): Promise<ConfirmationResult> {
       return new Promise((resolve) => {
           // Store the resolver function
-          confirmationResolve = resolve;
+          confirmationPromiseResolver = resolve; // Use the new resolver name
+          isLoading = false; // Enable input while waiting for confirmation
 
           // Add a confirmation message object to the messages array
           messages = [
@@ -350,25 +419,72 @@
                   content: 'The AI proposes running the following command(s). Do you want to proceed?',
                   commands: commandsToConfirm,
                   // Assign handlers directly here
-                  onAccept: () => handleConfirmation(true),
-                  onReject: () => handleConfirmation(false)
+                  onAccept: handleAcceptance, // Call new handler
+                  onReject: rejectConfirmation // Call simplified rejection handler
               }
           ];
           scrollToBottom(); // Scroll to show the confirmation prompt
       });
   }
 
-  function handleConfirmation(accepted: boolean) {
-      if (confirmationResolve) {
+  // Separate handler for acceptance
+  function handleAcceptance() {
+      if (confirmationPromiseResolver) {
           // Remove the confirmation message from the array
           messages = messages.filter(msg => msg.type !== 'confirmation');
-          // Resolve the promise
-          confirmationResolve(accepted);
-          confirmationResolve = null; // Clear the resolver
+          // Resolve the promise with accepted status
+          confirmationPromiseResolver({ accepted: true });
+          confirmationPromiseResolver = null; // Clear the resolver
           scrollToBottom(); // Scroll after removing confirmation
       } else {
-          console.error("AI Agent: Confirmation resolved without a pending promise.");
+          console.error("AI Agent: Acceptance handled without a pending promise.");
       }
+  }
+
+  // Simplified handler for rejecting via the button (no reason prompted)
+  function rejectConfirmation() {
+      if (confirmationPromiseResolver) {
+          // Remove the confirmation message from the array
+          messages = messages.filter(msg => msg.type !== 'confirmation');
+          // Resolve the promise with rejection and no reason
+          confirmationPromiseResolver({ accepted: false, reason: null });
+          confirmationPromiseResolver = null; // Clear the resolver
+          scrollToBottom(); // Scroll after removing confirmation
+      } else {
+          console.error("AI Agent: Button rejection handled without a pending promise.");
+      }
+  }
+  
+  // --- Cancel Request ---
+  function cancelRequest() {
+      if (isLoading) {
+          console.log("AI Agent: User requested cancellation.");
+          cancelRequested = true;
+          // Optionally update UI immediately, though the check in runAIInteractionLoop handles the logic
+          // isLoading = false; // Let the loop handle this on return/check
+      }
+  }
+
+  // --- Start New Task ---
+  function startNewTask() {
+      console.log("AI Agent: Starting new task, clearing conversation.");
+      // Reset messages to initial state
+      messages = [{ type: 'system', content: 'New task started. Chat history cleared.' }];
+      question = ''; // Clear input field
+      isLoading = false; // Ensure not in loading state
+      isWaitingForUser = false; // Ensure not waiting for user
+      cancelRequested = false; // Reset cancellation flag
+
+      // If AI was waiting for command confirmation, implicitly cancel it
+      if (confirmationPromiseResolver) {
+          confirmationPromiseResolver({ accepted: false, reason: "Task restarted by user." }); // Resolve as rejected
+          confirmationPromiseResolver = null;
+      }
+
+      // Optional: Focus the input textarea
+      // aiTextareaElement?.focus();
+
+      scrollToBottom(); // Scroll to show the cleared state
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -453,342 +569,22 @@
       on:keydown={handleKeydown}
       bind:this={aiTextareaElement}
     ></textarea>
-    <button class="ai-send-button" on:click={sendMessage} disabled={isLoading}>
-      {#if isLoading}
-        <span>Sending...</span>
-      {:else}
-        <span>Send</span>
-      {/if}
-    </button>
+    <div class="ai-button-container">
+        <button class="ai-new-task-button" title="Start New Task (Clears Chat)" on:click={startNewTask} disabled={isLoading}>
+          New Task
+        </button>
+        {#if isLoading}
+             <button class="ai-cancel-button" on:click={cancelRequest}>
+               Cancel
+             </button>
+        {/if}
+        <button class="ai-send-button" on:click={sendMessage} disabled={isLoading}>
+          {#if isLoading}
+            <span>Sending...</span>
+          {:else}
+            <span>Send</span>
+          {/if}
+        </button>
+    </div>
   </div>
 </section>
-
-<style>
-  /* Color Palette (assuming these are defined globally or passed as props) */
-  :root {
-    --color-primary-black: #0f0f0f;
-    --color-border-gray: #36454f;
-    --color-text-white: #468f46;
-    --color-hover-bg: #4a5560;
-    --color-panel-bg: #0f0f0f;
-  }
-
-  /* General text styles (might be inherited) */
-  h2, p, button, div, section, label, span {
-    color: var(--color-text-white) !important;
-    text-shadow: 0 0 5px rgba(255, 255, 250, 0.3);
-  }
-  .panel-header h2 {
-     text-shadow: none;
-  }
-
-  /* Inputs and Textareas */
-  textarea, input {
-    color: var(--color-text-white) !important;
-    background-color: var(--color-primary-black) !important;
-  }
-   textarea:focus, input:focus {
-     outline: none;
-     box-shadow: 0 0 0 1px var(--color-hover-bg) !important;
-   }
-
-  /* Panel styles */
-   .panel {
-     border-radius: 0.5rem;
-     box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-     overflow: hidden;
-     display: flex;
-     flex-direction: column;
-   }
-
-  .panel-header {
-    padding: 0.5rem 1rem;
-    color: var(--color-text-white) !important;
-    font-size: 0.875rem;
-    font-weight: 600;
-    margin-bottom: 0.5rem;
-    flex-shrink: 0;
-  }
-
-  /* AI Assistant panel */
-  .ai-panel {
-    width: 33.333333%; /* Or adjust as needed */
-    display: flex;
-    flex-direction: column;
-    background-color: var(--color-panel-bg);
-    border-radius: 0.5rem;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-    overflow: hidden;
-    height: 100%; /* Make panel fill height */
-  }
-
-  .ai-content {
-    flex: 1;
-    padding: 0 1rem 1rem 1rem;
-    overflow-y: auto;
-    /* Custom scrollbar styling */
-    scrollbar-width: thin;
-    scrollbar-color: var(--color-border-gray) var(--color-primary-black);
-  }
-  .ai-content::-webkit-scrollbar {
-    width: 8px;
-  }
-  .ai-content::-webkit-scrollbar-track {
-    background: var(--color-primary-black);
-  }
-  .ai-content::-webkit-scrollbar-thumb {
-    background-color: var(--color-border-gray);
-    border-radius: 4px;
-  }
-  .ai-content::-webkit-scrollbar-thumb:hover {
-    background-color: var(--color-hover-bg);
-  }
-
-
-  .ai-message {
-    margin-bottom: 1rem;
-    color: var(--color-text-white) !important;
-    font-size: 0.875rem;
-    /* font-style: italic; Removed italic for user/ai messages */
-    word-wrap: break-word; /* Ensure long words wrap */
-  }
-  .ai-message b { /* Style for User/AI labels */
-      font-weight: 600;
-  }
-  .ai-message:first-child { /* Style for initial system message */
-      font-style: italic;
-  }
-  .ai-error { /* Style for error messages */
-      color: #f87171 !important; /* Tailwind red-400 */
-      font-weight: bold;
-  }
-
-  /* Debug message styling */
-   .ai-debug {
-     background-color: #444; /* Darker gray */
-     border: 1px dashed #777;
-     padding: 0.5rem;
-     margin-bottom: 1rem;
-     border-radius: 0.25rem;
-     font-size: 0.8em;
-     opacity: 0.8;
-   }
-   .ai-debug-title {
-     font-weight: bold;
-     color: #ccc !important;
-     margin-bottom: 0.25rem;
-     text-shadow: none;
-   }
-   .ai-debug-content {
-     white-space: pre-wrap; /* Preserve whitespace and wrap */
-     word-wrap: break-word;
-     color: #ddd !important;
-     text-shadow: none;
-     max-height: 200px; /* Limit height */
-     overflow-y: auto; /* Add scroll if needed */
-     /* Minimal scrollbar for debug */
-     scrollbar-width: thin;
-     scrollbar-color: #666 #444;
-   }
-    .ai-debug-content::-webkit-scrollbar { width: 5px; }
-    .ai-debug-content::-webkit-scrollbar-track { background: #444; }
-    .ai-debug-content::-webkit-scrollbar-thumb { background-color: #666; border-radius: 3px; }
-
-
-  .ai-suggestion, .ai-explanation {
-    background-color: var(--color-border-gray);
-    padding: 0.75rem;
-    border-radius: 0.375rem;
-    margin-bottom: 1rem;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-  }
-
-  .ai-suggestion-title, .ai-explanation-title {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--color-text-white) !important;
-    margin-bottom: 0.25rem;
-    text-shadow: none;
-  }
-
-  .ai-suggestion-content, .ai-explanation-content {
-    font-size: 0.875rem;
-    color: var(--color-text-white) !important;
-    text-shadow: none;
-  }
-   .ai-suggestion-content code { /* Ensure code within suggestions is styled */
-      background-color: var(--color-primary-black);
-      padding: 0.1rem 0.3rem;
-      border-radius: 0.25rem;
-      font-size: 0.9em; /* Slightly larger than default code */
-      color: var(--color-text-white) !important;
-      text-shadow: none;
-   }
-
-
-  .ai-input-area {
-    margin-top: auto; /* Pushes input to bottom */
-    padding: 1rem;
-    background-color: var(--color-panel-bg);
-    flex-shrink: 0;
-    border-top: 1px solid rgba(255, 255, 255, 0.1); /* Add subtle separator */
-    position: relative; /* Needed if confirmation overlaps */
-    z-index: 10; /* Ensure input is above scrolled content */
-  }
-
-  .ai-textarea {
-    width: 100%;
-    background-color: var(--color-primary-black) !important;
-    border: 1px solid var(--color-border-gray); /* Add border */
-    border-radius: 0.375rem;
-    padding: 0.5rem;
-    font-size: 0.875rem;
-    color: var(--color-text-white) !important;
-    resize: none;
-    margin-bottom: 0.5rem; /* Add space below textarea */
-  }
-
-  .ai-send-button {
-    width: 100%;
-    background-color: var(--color-border-gray);
-    color: var(--color-text-white) !important;
-    font-weight: 600;
-    padding: 0.375rem 0.75rem;
-    border-radius: 0.375rem;
-    font-size: 0.875rem;
-    transition: all 150ms ease-in-out;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    border: none;
-    cursor: pointer; /* Add pointer cursor */
-  }
-
-  .ai-send-button:hover {
-    background-color: var(--color-hover-bg);
-  }
-  .ai-send-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  /* Ensure code blocks are styled correctly */
-  code {
-    background-color: var(--color-primary-black);
-    padding: 0.1rem 0.3rem;
-    border-radius: 0.25rem;
-    font-size: 0.8em;
-    color: var(--color-text-white) !important;
-    text-shadow: none;
-  }
-
-  /* Tailwind utility classes used in the template */
-  .flex { display: flex; }
-  .items-center { align-items: center; }
-  .justify-between { justify-content: space-between; }
-  .p-1 { padding: 0.25rem; }
-  .rounded-full { border-radius: 9999px; }
-  .hover\:bg-gray-600:hover { background-color: #4a5568; } /* Example gray */
-  .w-4 { width: 1rem; }
-  .h-4 { height: 1rem; }
-
- /* Confirmation prompt styling */
- .ai-confirmation {
-   background-color: #2d3748; /* Darker blue-gray */
-   border: 1px solid var(--color-border-gray);
-   padding: 1rem;
-   margin-bottom: 1rem;
-   border-radius: 0.375rem;
-   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
- }
- .ai-confirmation p {
-   margin-bottom: 0.75rem;
-   color: #e2e8f0 !important; /* Lighter text for contrast */
-   text-shadow: none;
- }
- .ai-confirmation-commands {
-   background-color: var(--color-primary-black);
-   padding: 0.5rem;
-   border-radius: 0.25rem;
-   margin-bottom: 1rem;
-   max-height: 150px;
-   overflow-y: auto;
-   /* Minimal scrollbar */
-   scrollbar-width: thin;
-   scrollbar-color: #666 #444;
- }
- .ai-confirmation-commands::-webkit-scrollbar { width: 5px; }
- .ai-confirmation-commands::-webkit-scrollbar-track { background: #444; }
- .ai-confirmation-commands::-webkit-scrollbar-thumb { background-color: #666; border-radius: 3px; }
-
- .ai-confirmation-commands code {
-   white-space: pre-wrap;
-   word-wrap: break-word;
-   color: var(--color-text-white) !important;
-   font-size: 0.85em;
-   text-shadow: none;
-   display: block; /* Ensure code takes full width */
- }
- .ai-confirmation-buttons {
-   display: flex;
-   justify-content: flex-end; /* Align buttons to the right */
-   gap: 0.5rem; /* Space between buttons */
- }
- .confirm-button {
-   padding: 0.375rem 0.75rem;
-   border-radius: 0.375rem;
-   font-weight: 600;
-   font-size: 0.875rem;
-   border: none;
-   cursor: pointer;
-   transition: background-color 150ms ease-in-out;
-   text-shadow: none;
- }
- .confirm-button.accept {
-   background-color: #38a169; /* Green */
-   color: white !important;
- }
- .confirm-button.accept:hover {
-   background-color: #2f855a; /* Darker green */
- }
- .confirm-button.reject {
-   background-color: #e53e3e; /* Red */
-   color: white !important;
- }
- .confirm-button.reject:hover {
-   background-color: #c53030; /* Darker red */
- }
-
-  /* Add styles for thinking details */
-  .ai-thinking-details {
-    margin-bottom: 0.5rem; /* Space between thinking and main response */
-    background-color: rgba(255, 255, 255, 0.05); /* Slightly different background */
-    border: 1px solid var(--color-border-gray);
-    border-radius: 0.25rem;
-    padding: 0.25rem 0.5rem;
-  }
-  .ai-thinking-summary {
-    cursor: pointer;
-    font-style: italic;
-    color: #a0aec0 !important; /* Lighter gray */
-    font-size: 0.8em;
-    text-shadow: none;
-    outline: none; /* Remove focus outline on summary */
-  }
-  .ai-thinking-content {
-    padding-top: 0.5rem;
-    font-size: 0.85em;
-    color: #cbd5e0 !important; /* Slightly lighter than main text */
-    text-shadow: none;
-    white-space: pre-wrap; /* Preserve formatting */
-    word-wrap: break-word;
-  }
-
-  /* Adjust AI message padding if thinking is present */
-  .ai-message > b { /* Target the "AI:" label */
-    display: block; /* Ensure label is on its own line if thinking is above */
-    /* margin-top: 0.5rem; */ /* Add space above label if thinking is present - commented out for now */
-  }
-  /* More specific selector if needed */
-   .ai-message details + b {
-     margin-top: 0.5rem;
-   }
-</style>
