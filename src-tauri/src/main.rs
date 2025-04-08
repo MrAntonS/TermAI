@@ -7,6 +7,10 @@ use std::io::{Read, Write}; // Removed BufReader, BufRead
 use std::process::{Command, Stdio, Child, ChildStdin, ChildStdout, ChildStderr};
 use std::sync::{Arc, Mutex};
 use std::thread;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt; // Import CommandExt for creation_flags
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000; // Define the flag constant
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, State, Window, Emitter};
@@ -280,6 +284,8 @@ async fn ssh_connect(
              command.arg("-tt");
         }
         command.arg(&hostname); // Hostname
+
+        command.creation_flags(CREATE_NO_WINDOW); // Add this flag to prevent console window
     }
 
     #[cfg(not(target_os = "windows"))]
