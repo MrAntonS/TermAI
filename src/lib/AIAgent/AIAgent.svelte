@@ -84,6 +84,8 @@
 
         // --- Construct Continuation Prompt ---
         // Use getContinuationPrompt, ensuring it includes the latest user message from the history
+        // Don't pass terminal context here initially; AI hasn't requested it yet in this resume flow.
+        // Pass terminal context again
         const continuationPrompt = getContinuationPrompt(messages, historyLimit, terminalContext);
         console.log("AI Agent: Constructed continuation prompt:\n---\n" + continuationPrompt + "\n---");
 
@@ -95,9 +97,10 @@
             console.error('AI Interaction Loop Error on Resume:', error);
             const errorMessage = typeof error === 'string' ? error : 'An unexpected error occurred during AI interaction resume.';
             messages = [...messages, { type: 'error', content: `Interaction Error: ${errorMessage}` }];
+            isLoading = false; // Ensure loading is stopped on resume error
         } finally {
             // isLoading should be managed within the loop now, but set false just in case
-            // isLoading = false; // Let the loop handle this
+            // isLoading = false; // Let the loop handle this - Now handled in catch
             scrollToBottom();
         }
         return; // Stop further execution in sendMessage
@@ -132,14 +135,15 @@
     scrollToBottom(); // Scroll after adding debug message
 
     // --- Construct Initial Prompt ---
-    const initialTerminalContext = initialTerminalContent.slice(-10).join('\n'); // Get last 10 lines
+    const initialTerminalContext = initialTerminalContent.slice(-100).join('\n'); // Get last 100 lines
     console.log("AI Agent: Extracted initial terminal context for prompt:\n---\n" + initialTerminalContext + "\n---");
 
     // --- Gather recent conversation history ---
     const historyLimit = 50; // Include last N messages (user/ai)
 
     // Use imported function to generate the initial prompt
-    const initialPrompt = getInitialPrompt(messages, historyLimit, initialTerminalContext, userQuestion);
+    // Remove the extra initialTerminalContext argument
+    const initialPrompt = getInitialPrompt(messages, historyLimit, userQuestion);
     console.log("AI Agent: Constructed initial prompt:\n---\n" + initialPrompt + "\n---");
 
     // --- Start Interaction Loop ---
@@ -161,8 +165,8 @@
     if (step >= MAX_AI_STEPS) {
         messages = [...messages, { type: 'error', content: `Max interaction steps (${MAX_AI_STEPS}) reached. Stopping.` }];
         scrollToBottom();
+        isLoading = false; // Set loading false before throwing
         throw new Error("Max interaction steps reached."); // Stop the loop
-        isLoading=false;
     }
 
     console.log(`AI Agent: Step ${step + 1} - Sending prompt:`, prompt);
@@ -266,17 +270,17 @@
             if (confirmationResult.accepted) {
                 // --- User Accepted ---
                 isLoading = true; // Set loading before execution
-                messages = [...messages, { type: 'system', content: `Executing command(s):\n\`\`\`\n${extractedCommands.join('\n')}\n\`\`\`` }];
+                // Combine commands with '&&'
+                const combinedCommand = extractedCommands.join(' \n ');
+                messages = [...messages, { type: 'system', content: `Executing combined command: ${combinedCommand}` }];
                 scrollToBottom();
 
                 let newTerminalContent: string[] = []; // Scope to this block
                 try {
-                    // Execute commands
-                    for (const command of extractedCommands) {
-                        console.log(`AI Agent: Invoking ai_write_to_ssh with: ${command}\\n`);
-                        await invoke('ai_write_to_ssh', { data: command + '\n' });
-                        await new Promise(resolve => setTimeout(resolve, 150)); // Short delay
-                    }
+                    // Execute the combined command
+                    console.log(`AI Agent: Invoking ai_write_to_ssh with combined command: ${combinedCommand}\\n`);
+                    await invoke('ai_write_to_ssh', { data: combinedCommand + '\n' });
+                    // Removed the loop and the per-command delay
 
                     // Wait and read new terminal state
                     await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
@@ -291,6 +295,7 @@
                     const cmdErrorMessage = typeof cmdError === 'string' ? cmdError : `Failed during command execution or terminal read.`;
                     messages = [...messages, { type: 'error', content: `Command execution failed: ${cmdErrorMessage}` }];
                     scrollToBottom();
+                    isLoading = false; // Set loading false before throwing
                     throw new Error(`Command execution/read failed.`); // Stop loop
                 }
 
@@ -315,6 +320,7 @@
                      console.error("AI Agent: Error reading terminal content after command rejection:", err);
                      messages = [...messages, { type: 'error', content: `Error reading terminal after command rejection: ${err}` }];
                      scrollToBottom();
+                     isLoading = false; // Set loading false before throwing
                      throw new Error("Failed to read terminal after command rejection."); // Stop loop
                  }
 
@@ -329,6 +335,7 @@
         } else if (extractedCommands.length > 0 && !terminalInstance) {
             messages = [...messages, { type: 'error', content: `Cannot propose command(s): Terminal not available.` }];
             scrollToBottom();
+            isLoading = false; // Set loading false before throwing
             throw new Error("Terminal not available for command proposal."); // Stop loop
         }
         // If cmdMatch but extractedCommands array is empty, treat as no command.
@@ -363,6 +370,7 @@
                  console.error("AI Agent: Error reading terminal content when no commands proposed:", err);
                  messages = [...messages, { type: 'error', content: `Error reading terminal: ${err}` }];
                  scrollToBottom();
+                 isLoading = false; // Set loading false before throwing
                  throw new Error("Failed to read terminal state for next step."); // Stop loop
              }
         } else {
@@ -371,6 +379,7 @@
              // For now, let's stop if terminal is expected but missing.
              messages = [...messages, { type: 'error', content: `Terminal not available to read state.` }];
              scrollToBottom();
+             isLoading = false; // Set loading false before throwing
              throw new Error("Terminal not available for reading state for next step."); // Stop loop
         }
 
@@ -381,6 +390,8 @@
         // Construct the next prompt, including AI's last response, history, and terminal state
         const nextTerminalContext = currentTerminalContent.slice(-10).join('\n');
         // Use imported function to generate the continuation prompt
+        // Don't pass terminal context here, as <readTerm/> was not requested in this path.
+        // Pass terminal context again
         const nextPrompt = getContinuationPrompt(messages, historyLimit, nextTerminalContext);
         console.log(`AI Agent: Step ${step + 1} - Continuing loop. Constructed next prompt:\n---\n` + nextPrompt + "\n---");
         // Recursive call for the next step

@@ -49,7 +49,7 @@ pub async fn send_to_gemini(prompt: String) -> Result<String, String> {
     let api_key = env::var("GEMINI_API_KEY").map_err(|e| format!("Failed to get GEMINI_API_KEY: {}", e))?;
     // Use the specific model in the endpoint URL. Adjust region/project if needed.
     // Using v1beta as an example, check current Gemini docs for stable endpoints.
-    let model_name = "gemini-2.0-flash-thinking-exp-01-21"; // Updated model name
+    let model_name = "gemini-2.0-flash"; // Updated model name
     let api_endpoint = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
         model_name, api_key

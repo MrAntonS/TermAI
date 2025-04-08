@@ -256,32 +256,61 @@ async fn ssh_connect(
     // Disconnect any existing session first
     disconnect_ssh_internal(&state).await?;
 
-    // --- Build the command (using sshpass if password is provided) ---
-    let mut command = if let Some(pass) = password {
-        if pass.is_empty() {
-            return Err("Password provided but is empty.".to_string());
+    // --- Build the command based on OS ---
+    let mut command = Command::new(""); // Placeholder
+
+    #[cfg(target_os = "windows")]
+    {
+        println!("Configuring command for Windows (using Plink).");
+        command = Command::new("plink");
+        command.arg("-ssh"); // Specify SSH protocol
+        command.arg("-P").arg(port.to_string()); // Port
+        command.arg("-l").arg(&username); // Username
+
+        if let Some(pass) = password {
+            if pass.is_empty() {
+                return Err("Password provided but is empty.".to_string());
+            }
+            println!("Using password authentication with Plink.");
+            command.arg("-pw").arg(pass); // Password
+        } else {
+             println!("Attempting key-based/agent authentication with Plink (no password provided).");
+             // Plink can use Pageant or specify key files with -i. Agent auth is often default.
+             // Add -tt for pseudo-terminal allocation, similar to ssh.
+             command.arg("-tt");
         }
-        println!("Using sshpass for password authentication.");
-        let mut cmd = Command::new("sshpass");
-        cmd.arg("-p")
-           .arg(pass) // Pass the password to sshpass
-           .arg("ssh") // Command to run
-           .arg(format!("{}@{}", username, hostname))
-           .arg("-p")
-           .arg(port.to_string())
-           // Removed StrictHostKeyChecking options
-           .arg("-tt"); // Force pseudo-terminal allocation - IMPORTANT for interactive shells
-        cmd
-    } else {
-        // No password provided, attempt key-based/agent authentication
-        println!("Attempting key-based/agent authentication (no password provided).");
-        let mut cmd = Command::new("ssh");
-        cmd.arg(format!("{}@{}", username, hostname))
-           .arg("-p")
-           .arg(port.to_string())
-           .arg("-tt"); // Force pseudo-terminal allocation
-        cmd
-    };
+        command.arg(&hostname); // Hostname
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        println!("Configuring command for non-Windows (using ssh/sshpass).");
+        command = if let Some(pass) = password {
+            if pass.is_empty() {
+                return Err("Password provided but is empty.".to_string());
+            }
+            println!("Using sshpass for password authentication.");
+            let mut cmd = Command::new("sshpass");
+            cmd.arg("-p")
+               .arg(pass) // Pass the password to sshpass
+               .arg("ssh") // Command to run
+               .arg(format!("{}@{}", username, hostname))
+               .arg("-p")
+               .arg(port.to_string())
+               // Removed StrictHostKeyChecking options
+               .arg("-tt"); // Force pseudo-terminal allocation - IMPORTANT for interactive shells
+            cmd
+        } else {
+            // No password provided, attempt key-based/agent authentication
+            println!("Attempting key-based/agent authentication (no password provided).");
+            let mut cmd = Command::new("ssh");
+            cmd.arg(format!("{}@{}", username, hostname))
+               .arg("-p")
+               .arg(port.to_string())
+               .arg("-tt"); // Force pseudo-terminal allocation
+            cmd
+        };
+    }
 
     // Configure stdio for the command (either ssh or sshpass)
     command
