@@ -385,6 +385,26 @@ async fn disconnect_ssh_internal(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+// --- AI Interaction Command ---
+
+#[tauri::command]
+async fn ai_write_to_ssh(state: State<'_, AppState>, data: String) -> Result<(), String> {
+    println!("AI attempting to write to SSH: {:?}", data); // Log AI writes
+    let command_sender = {
+        let guard = state.ssh_handle.lock().map_err(|_| "Failed to lock state mutex".to_string())?;
+        guard.as_ref().map(|handle| handle.command_sender.clone())
+    };
+
+    if let Some(sender) = command_sender {
+        sender
+            .send(SshCommand::Write(data.into_bytes()))
+            .await
+            .map_err(|e| format!("AI failed to send write command: {}", e))
+    } else {
+        Err("AI write failed: Not connected".to_string())
+    }
+}
+
 
 // --- Main Application Setup ---
 fn main() {
@@ -392,7 +412,7 @@ fn main() {
     // It's okay if the file doesn't exist or fails to load.
     dotenvy::dotenv().ok();
 
-    let app_state = AppState::new();
+    let app_state = AppState::new(); // AppState remains unchanged from original
 
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
@@ -401,7 +421,8 @@ fn main() {
             ssh_connect,
             write_to_ssh,
             disconnect_ssh,
-            gemini_api::send_to_gemini // Register the new command
+            gemini_api::send_to_gemini, // Existing command
+            ai_write_to_ssh           // <-- Add new AI write command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

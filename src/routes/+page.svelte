@@ -46,7 +46,6 @@
   <!-- Sidebar -->
   <QuickConnect
     onSelectConnection={handleConnectionSelect}
-    terminalConnectFn={terminalComponent?.connect}
   />
 
   <!-- Main Content -->
@@ -56,6 +55,6 @@
        <TerminalEmulator bind:this={terminalComponent} />
     </div>
     <!-- AI Agent Panel -->
-    <AIAgent />
+    <AIAgent terminalInstance={terminalComponent} />
   </main>
 </div>

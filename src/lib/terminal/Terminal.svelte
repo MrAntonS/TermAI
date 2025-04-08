@@ -282,6 +282,43 @@ if (window.ResizeObserver) {
     }
   }
 
+  // --- Function to read terminal buffer content ---
+  export function getTerminalContent(): string[] {
+    if (!term) {
+      console.warn("getTerminalContent called before terminal initialized.");
+      return [];
+    }
+    // Use the 'normal' buffer which contains the viewport and scrollback.
+    const buffer = term.buffer.normal;
+    const lines: string[] = [];
+    const bufferLineCount = buffer.length; // Total lines in the buffer (viewport + scrollback)
+
+    console.log(`getTerminalContent: Reading ${bufferLineCount} lines from normal buffer.`);
+
+    // Iterate through all lines stored in the buffer.
+    // buffer.getLine(i) gets the line at the i-th position within the buffer's
+    // internal line array, starting from the top of the scrollback.
+    for (let i = 0; i < bufferLineCount; i++) {
+        const line = buffer.getLine(i);
+        if (line) {
+            // translateToString(true) gets the line content, handling wrapped lines correctly.
+            // Trim trailing whitespace from each line before adding.
+            const lineContent = line.translateToString(true).trimEnd();
+            lines.push(lineContent);
+        } else {
+             console.warn(`getTerminalContent: Could not retrieve line at buffer index ${i}`);
+        }
+    }
+
+    // Remove empty lines from the end of the collected lines
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+        lines.pop();
+    }
+
+    console.log(`getTerminalContent: Read ${bufferLineCount}, returning ${lines.length} potentially trimmed lines.`);
+    return lines;
+  }
+
 </script>
 
 <style>
