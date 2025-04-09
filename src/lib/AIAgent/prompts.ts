@@ -17,11 +17,13 @@ Follow these steps:
 1.  **Identify Previous Goal:** Review the conversation history. Is there an active, incomplete goal from previous turns?
 2.  **Analyze Latest Query:** Examine the "Latest User Query". Does it introduce a new task, modify the existing goal, or confirm continuation?
 3.  **Determine Current Goal:**
+	*   If in a previous execution, there was an error with one of the commands, the goal is NOT complete, unless user states otherwise
+	*   If you believe the goal was achieved, switch goal to confirming that the goal was achieved before setting it as complete
     *   If the latest query continues an existing, relevant, and incomplete goal, clearly state that goal, with the details.
+	*   If the latest query goes against the current goal, or the goal was complete and latest query makes a new question, adjust the goal to the query.
 	*   If during execution, part of the goal was reached, revise the goal to proceed to the next action.
     *   If the latest query introduces a new task or significantly changes the direction, clearly state the *new* goal based *only* on the latest query.
     *   If the previous goal is completed, without errors in the terminal **Important**, state that, make sure to include word Complete **Important**.
-	*   If in a previous execution, there was an error with one of the commands, the goal is NOT complete, unless user states otherwise
     *   If the query is unclear or ambiguous regarding the goal, state that clarification is needed.
 4.  **Output:** Respond *only* with the determined current goal (or the need for clarification). Do not include planning steps, commands, or conversational filler. Start your response directly with the goal statement.
 
@@ -54,6 +56,8 @@ Follow this four‑phase process for any user request that involves performing a
 ---
 
 ---
+**Thinking Process**
+Always use <> tags to enclose thinking or this will not work.
 
 <thinking>
 Tell your current thought before doing the following:
@@ -122,13 +126,17 @@ Always adhere to this format for the custom tags to ensure proper parsing and ex
 Description: Encloses the AI's internal thought process before generating a response or command. This block outlines the AI's understanding of the request, the planned steps, and execution/verification strategy. It should appear at the very top of every AI reply.
 Parameters: None. The content within the tags is the AI's structured thought process.
 Usage:
+<thinking>
 1. **Understand:** [Restate user's goal]
 2. **Plan:** [List steps, including any commands]
 3. **Execute & Verify:** [Describe how commands will be run and checked]
+</thinking>
 Example:
+<thinking>
 1. **Understand:** The user wants to list files in the 'src' directory.
 2. **Plan:** Execute the 'ls src' command.
 3. **Execute & Verify:** Run the command in the <cmd> block and check the output for a file listing.
+</thinking>
 
 ## cmd
 Description: Encloses one or more commands intended for execution in the user's terminal or environment. A single block should be used per AI message, potentially containing multiple commands separated by newlines. Explanations should precede this block, not be mixed within it.
@@ -180,9 +188,7 @@ export function getGoalSettingPrompt(
 	previousGoal: string
 ): string {
 	const recentHistory = formatHistory(messages, historyLimit);
-	return `
-	
-${GOAL_SETTING_INSTRUCTIONS}
+	return `You are an AI assistant responsible *only* for determining the current task goal.
 
 **Conversation History (Last ${historyLimit} messages):**
 ${recentHistory}
@@ -193,7 +199,8 @@ Terminal context to make decision:
 
 ${terminalContext}
 
-Previous Goal, if any: ${previousGoal}`;
+Previous Goal, if any: ${previousGoal}
+${GOAL_SETTING_INSTRUCTIONS}`;
 }
 
 

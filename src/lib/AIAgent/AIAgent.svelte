@@ -257,12 +257,12 @@
 
     if (totalCmdBlocks > 1) {
         console.warn(`AI Agent: Step ${step + 1} - Detected multiple (${totalCmdBlocks}) command blocks. Requeuing prompt.`);
-        messages = [...messages, { type: 'debug', content: `AI response contained multiple command blocks (${totalCmdBlocks}). The AI is being asked to respond without multiple command blocks.` }];
+        // messages = [...messages, { type: 'debug', content: `AI response contained multiple command blocks (${totalCmdBlocks}). The AI is being asked to respond without multiple command blocks.` }];
         // Create a new prompt that includes the original prompt and the instruction to avoid multiple command blocks
         const newPrompt = `Previous AI response contained multiple command blocks. Please provide a response that contains only one command block. Original prompt: ${prompt}`;
        // messages = [...messages, { type: 'debug', title: 'New Prompt', content: newPrompt }];
         // Send the new prompt to the AI
-        sendMessage(newPrompt);
+        await runAIInteractionLoop(newPrompt, step+1);
         isLoading = false;
         scrollToBottom();
     }
