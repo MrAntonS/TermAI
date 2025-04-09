@@ -250,7 +250,7 @@
     scrollToBottom(); // Scroll after adding debug message
 
     // --- Process Response ---
-    let aiResponseText = rawResponse;
+    let aiResponseText = rawResponse.replace(/```text(.*?)```/s, '$1').trim();
     let aiThinkingText: string | undefined = undefined; // Variable for thinking
 
     // Extract thinking first
@@ -269,7 +269,7 @@
 
     // Extract text part (remove cmd, task_complete, and wait_for_user tags for display)
     if (cmdMatch || cmdMatchOther) {
-        aiResponseText = aiResponseText.replace(/<cmd>.*?<\/cmd>/s, '').replace(/```cmd(.*?)```/s, '').trim(); // Use 's' flag
+        aiResponseText = aiResponseText.replace(/<cmd>(.*?)<\/cmd>/s, '').replace(/```cmd(.*?)```/s, '').trim(); // Use 's' flag
     }
     if (taskCompleteMatch) {
         aiResponseText = aiResponseText.replace(/<task_complete\/>/, '').trim();
@@ -290,7 +290,6 @@
         messages = [...messages, { type: 'system', content: 'AI indicates task completed.' }];
         scrollToBottom();
         isLoading = false; // Task complete, stop loading
-        return; // End the loop
     }
 
     // --- Check for Goal Completion ---
@@ -300,12 +299,13 @@
         isLoading = false;
         return;
     }
-
+    // messages = [...messages, { type: 'debug', title: `DEBUG: cmdMatch)`, content: `${cmdMatch?.entries}` }];
     // --- Handle Commands ---
-    if (cmdMatch && cmdMatch[1]) {
-        const commandsToExecuteStr = cmdMatch[1].trim();
-        const extractedCommands = commandsToExecuteStr.split('\n').map(cmd => cmd.trim()).filter(cmd => cmd.length > 0);
-
+    if (cmdMatch) {
+      // messages = [...messages, { type: 'debug', title: `DEBUG: cmdMatch)`, content: `got here` }];
+      const commandsToExecuteStr = cmdMatch[1].trim();
+      const extractedCommands = commandsToExecuteStr.split('\n').map(cmd => cmd.trim()).filter(cmd => cmd.length > 0);
+      // messages = [...messages, { type: 'debug', title: `DEBUG: extracted commands)`, content: `${extractedCommands}` }];
         if (extractedCommands.length > 0 && terminalInstance) {
             // --- Show Confirmation ---
             const confirmationResult = await promptForCommandConfirmation(extractedCommands);
