@@ -16,7 +16,7 @@
   let aiContentElement: HTMLDivElement;
   let question = '';
   // Add 'error', 'confirmation' types for messages
-  type MessageType = 'user' | 'ai' | 'system' | 'suggestion' | 'explanation' | 'error' | 'debug' | 'confirmation';
+  type MessageType = 'user' | 'ai' | 'system' | 'suggestion' | 'explanation' | 'error' | 'debug' | 'confirmation' | 'warning';
   // Add optional 'thinking' field for AI messages
   type Message = { type: MessageType, content: string, thinking?: string, title?: string, commands?: string[], onAccept?: () => void, onReject?: () => void, isGoal?: boolean }; // Added isGoal flag
   // Define a type for the confirmation result
@@ -36,11 +36,12 @@
   let isWaitingForUser = false; // Flag to indicate AI is waiting for user input
   let cancelRequested = false; // Flag to indicate user requested cancellation
   // let currentGoal: string = ''; // State variable for the current goal
+  let previousGoal: string = '';
   $: currentGoalValue = `${get(currentGoal)}`;
   
   const MAX_AI_STEPS = 5; // Safety limit for interaction loop
-  async function sendMessage() {
-    const userQuestion = question.trim();
+  async function sendMessage(promptOverride?: string) {
+    const userQuestion = (promptOverride || question).trim();
     if (userQuestion === '' || isLoading) return; // Don't send empty or while processing
 
     // --- Handle Rejection via Message Input ---
@@ -87,10 +88,12 @@
         const historyLimit = 50;
 
         // --- Step 1: Determine Goal on Resume ---
-        const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimit, userQuestion, terminalContext);
+        const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimit, userQuestion, terminalContext, previousGoal);
         console.log("AI Agent: Constructed goal setting prompt (resume):\n---\n" + goalSettingPrompt + "\n---");
         try {
-            currentGoal.set(await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt }));
+            const newGoal = await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt });
+            previousGoal = get(currentGoal);
+            currentGoal.set(newGoal);
             console.log("AI Agent: Determined goal (resume):", currentGoal);
             // Removed message displaying the goal
             scrollToBottom();
@@ -160,10 +163,12 @@
     const historyLimit = 50; // Include last N messages (user/ai)
 
     // --- Step 1: Determine Goal for New Interaction ---
-     const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimit, userQuestion, initialTerminalContext);
+     const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimit, userQuestion, initialTerminalContext, previousGoal);
      console.log("AI Agent: Constructed goal setting prompt (initial):\n---\n" + goalSettingPrompt + "\n---");
      try {
-         currentGoal.set(await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt }));
+         const newGoal = await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt });
+         previousGoal = get(currentGoal);
+         currentGoal.set(newGoal);
          console.log("AI Agent: Determined goal (initial):", currentGoal);
          // Removed message displaying the goal
          scrollToBottom();
@@ -245,12 +250,28 @@
 
     console.log(`AI Agent: Step ${step + 1} - Received raw response:`, rawResponse);
 
+    // --- Check for Multiple Command Blocks ---
+    const cmdTagMatches = [...rawResponse.matchAll(/<cmd>(.*?)<\/cmd>/gs)];
+    const cmdBacktickMatches = [...rawResponse.matchAll(/```cmd(.*?)```/gs)];
+    const totalCmdBlocks = cmdTagMatches.length + cmdBacktickMatches.length;
+
+    if (totalCmdBlocks > 1) {
+        console.warn(`AI Agent: Step ${step + 1} - Detected multiple (${totalCmdBlocks}) command blocks. Requeuing prompt.`);
+        messages = [...messages, { type: 'debug', content: `AI response contained multiple command blocks (${totalCmdBlocks}). The AI is being asked to respond without multiple command blocks.` }];
+        // Create a new prompt that includes the original prompt and the instruction to avoid multiple command blocks
+        const newPrompt = `Previous AI response contained multiple command blocks. Please provide a response that contains only one command block. Original prompt: ${prompt}`;
+       // messages = [...messages, { type: 'debug', title: 'New Prompt', content: newPrompt }];
+        // Send the new prompt to the AI
+        sendMessage(newPrompt);
+        isLoading = false;
+        scrollToBottom();
+    }
     // --- Add Debug Message for Raw AI Response ---
-   // messages = [...messages, { type: 'debug', title: `DEBUG: Raw AI Response (Step ${step + 1})`, content: rawResponse }];
+   //messages = [...messages, { type: 'debug', title: `DEBUG: Raw AI Response (Step ${step + 1})`, content: rawResponse }];
     scrollToBottom(); // Scroll after adding debug message
 
     // --- Process Response ---
-    let aiResponseText = rawResponse.replace(/```text(.*?)```/s, '$1').trim();
+    let aiResponseText = rawResponse.replace(/```text(.*?)```/s, '$1').replace(/```xml(.*?)```/s, '$1').trim();
     let aiThinkingText: string | undefined = undefined; // Variable for thinking
 
     // Extract thinking first
@@ -349,11 +370,12 @@
                 const historyLimitAccept = 50;
                 // Check the goal
 
-                const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimitAccept, outcomeMessageAccept.content, nextTerminalContextAccept);
+                const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimitAccept, outcomeMessageAccept.content, nextTerminalContextAccept, previousGoal);
                 console.log("AI Agent: Constructed goal setting prompt (initial):\n---\n" + goalSettingPrompt + "\n---");
                 try {
-                    currentGoal.set(await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt }));
-                    // Removed message displaying the goal
+                    const newGoal = await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt });
+                    previousGoal = get(currentGoal);
+                    currentGoal.set(newGoal);
                     scrollToBottom();
                 } catch (error) {
                     console.error('AI Goal Setting Error (Initial):', error);
@@ -365,14 +387,15 @@
                 }
 
                 // --- Construct Next Prompt (Accepted) ---
-                const nextPrompt = getPromptAfterAcceptedCommand(nextTerminalContextAccept, get(currentGoal)); // Use potentially updated currentGoal
-                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after accepted commands & goal re-eval):\n---\n` + nextPrompt + "\n---");
+                const nextPrompt = getPromptAfterAcceptedCommand(nextTerminalContextAccept, get(currentGoal), messages, historyLimitAccept); // Use potentially updated currentGoal
+                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after accepted commands &amp; goal re-eval):\n---\n` + nextPrompt + "\n---");
                 await runAIInteractionLoop(nextPrompt, step + 1); // Pass potentially updated currentGoal
 
             } else {
                 // --- User Rejected ---
+                const combinedCommand = extractedCommands.join(' \n ');
                 isLoading = true; // Set loading before continuing loop
-                messages = [...messages, { type: 'system', content: `User rejected the proposed command(s). ${confirmationResult.reason ? `Reason: ${confirmationResult.reason}` : ''}` }];
+                messages = [...messages, { type: 'system', content: `User rejected the proposed command(s).(Commands listed: ${combinedCommand}) ${confirmationResult.reason ? `Reason: ${confirmationResult.reason}` : ''}` }];
                 scrollToBottom();
 
                 // Construct next prompt indicating rejection
@@ -395,11 +418,12 @@
                  messages = [...messages, outcomeMessageReject];
                  const historyLimitReject = 50;
 
-                const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimitReject, outcomeMessageReject.content, nextTerminalContextReject);
+                const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimitReject, outcomeMessageReject.content, nextTerminalContextReject, previousGoal);
                 console.log("AI Agent: Constructed goal setting prompt (initial):\n---\n" + goalSettingPrompt + "\n---");
                 try {
-                    currentGoal.set(await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt }));
-                    // Removed message displaying the goal
+                    const newGoal = await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt });
+                    currentGoal.set(newGoal);
+                    previousGoal = newGoal;
                     scrollToBottom();
                 } catch (error) {
                     console.error('AI Goal Setting Error (Initial):', error);
@@ -411,8 +435,8 @@
                 }
 
                 // --- Construct Next Prompt (Rejected) ---
-                const nextPrompt = getPromptAfterRejectedCommand(nextTerminalContextReject, get(currentGoal), confirmationResult.reason ?? null); // Use potentially updated currentGoal
-                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after rejected commands & goal re-eval, reason: ${confirmationResult.reason ?? 'None'}):\n---\n` + nextPrompt + "\n---");
+                const nextPrompt = getPromptAfterRejectedCommand(nextTerminalContextReject, get(currentGoal), messages, historyLimitReject, confirmationResult.reason ?? null); // Use potentially updated currentGoal
+                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after rejected commands &amp; goal re-eval, reason: ${confirmationResult.reason ?? 'None'}):\n---\n` + nextPrompt + "\n---");
                 await runAIInteractionLoop(nextPrompt, step + 1); // Pass potentially updated currentGoal
             }
             return; // Stop further processing in this step as the loop was continued recursively
@@ -580,6 +604,7 @@
       // aiTextareaElement?.focus();
 
       scrollToBottom(); // Scroll to show the cleared state
+      currentGoal.set(''); // Reset the current goal
   }
 
   function handleKeydown(event: KeyboardEvent) {

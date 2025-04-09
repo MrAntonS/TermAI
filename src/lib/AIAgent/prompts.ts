@@ -18,8 +18,10 @@ Follow these steps:
 2.  **Analyze Latest Query:** Examine the "Latest User Query". Does it introduce a new task, modify the existing goal, or confirm continuation?
 3.  **Determine Current Goal:**
     *   If the latest query continues an existing, relevant, and incomplete goal, clearly state that goal, with the details.
+	*   If during execution, part of the goal was reached, revise the goal to proceed to the next action.
     *   If the latest query introduces a new task or significantly changes the direction, clearly state the *new* goal based *only* on the latest query.
-    *   If the previous goal is completed, state that, make sure to include word Complete **Important**.
+    *   If the previous goal is completed, without errors in the terminal **Important**, state that, make sure to include word Complete **Important**.
+	*   If in a previous execution, there was an error with one of the commands, the goal is NOT complete, unless user states otherwise
     *   If the query is unclear or ambiguous regarding the goal, state that clarification is needed.
 4.  **Output:** Respond *only* with the determined current goal (or the need for clarification). Do not include planning steps, commands, or conversational filler. Start your response directly with the goal statement.
 
@@ -174,10 +176,13 @@ export function getGoalSettingPrompt(
 	messages: { type: string; content: string }[],
 	historyLimit: number,
 	userQuestion: string,
-	terminalContext: string
+	terminalContext: string,
+	previousGoal: string
 ): string {
 	const recentHistory = formatHistory(messages, historyLimit);
-	return `You are an AI assistant responsible *only* for determining the current task goal.
+	return `
+	
+${GOAL_SETTING_INSTRUCTIONS}
 
 **Conversation History (Last ${historyLimit} messages):**
 ${recentHistory}
@@ -188,7 +193,7 @@ Terminal context to make decision:
 
 ${terminalContext}
 
-${GOAL_SETTING_INSTRUCTIONS}`;
+Previous Goal, if any: ${previousGoal}`;
 }
 
 
@@ -201,7 +206,9 @@ export function getInitialPrompt(
 ): string {
 	const recentHistory = formatHistory(messages, historyLimit);
 	// Note: userQuestion might be redundant if currentGoal is passed, adjust as needed.
-	return `You are an AI assistant interacting with a user and potentially a live terminal.
+	return `
+${BASE_INSTRUCTIONS}
+
 The current goal is: ${currentGoal}
 
 **Conversation History (Last ${historyLimit} messages):**
@@ -209,17 +216,22 @@ ${recentHistory}
 
 **Latest User Query (leading to current goal):** ${userQuestion}
 
-${BASE_INSTRUCTIONS}`;
+`;
 }
 
 // Prompt after the user accepted and commands were executed
 export function getPromptAfterAcceptedCommand(
 	terminalContext: string,
-	currentGoal: string // Pass the goal
+	currentGoal: string, // Pass the goal
+  messages: { type: string; content: string }[],
+  historyLimit: number
 ): string {
 	// History is implicitly included in the ongoing interaction with the LLM,
 	// but we could add a summary if needed.
-	return `User approved the previous command(s) and they were executed. You are an AI assistant interacting with a user and potentially a live terminal.
+	const recentHistory = formatHistory(messages, historyLimit);
+	return `
+${BASE_INSTRUCTIONS}
+User approved the previous command(s) and they were executed.
 The current goal is: ${currentGoal}
 
 **IMPORTANT CONTEXT: Below is the *updated* state of the terminal after execution. Use this context AND the conversation history to determine the next action towards the goal.**
@@ -230,17 +242,21 @@ ${terminalContext}
 ***
 
 **Previous Conversation History is available.**
-${BASE_INSTRUCTIONS}`; // Reuses BASE_INSTRUCTIONS
+${recentHistory}
+`; // Reuses BASE_INSTRUCTIONS
 }
 
 // Prompt after the user rejected commands
 export function getPromptAfterRejectedCommand(
 	terminalContext: string,
 	currentGoal: string, // Pass the goal
+	messages: { type: string; content: string }[],
+	historyLimit: number,
 	reason?: string | null // Add optional reason parameter
 ): string {
 	// History is implicitly included.
 	// This prompt needs slightly modified instructions for Phase 1 & 2 to handle the rejection.
+	const recentHistory = formatHistory(messages, historyLimit);
 	const REJECTION_MODIFIED_INSTRUCTIONS = BASE_INSTRUCTIONS.replace(
 		'2.  Within the thinking block, clearly state your understanding of the user\'s request, referencing the history and terminal state.',
 		'2.  Within the thinking block, acknowledge the user rejected the previous commands. Re-evaluate the approach to the goal based on the rejection.' // Adjusted wording
@@ -264,7 +280,10 @@ export function getPromptAfterRejectedCommand(
 
 
 	const rejectionReasonText = reason ? `Reason provided: "${reason}"` : "No reason provided.";
-	return `The user REJECTED the previously suggested command(s) related to the goal: ${currentGoal}. ${rejectionReasonText}. You are an AI assistant interacting with a user and potentially a live terminal.
+	return `
+${REJECTION_MODIFIED_INSTRUCTIONS}
+
+The user REJECTED the previously suggested command(s) related to the goal: ${currentGoal}. ${rejectionReasonText}. 
 
 **IMPORTANT CONTEXT: Below is the current state of the terminal. The previous commands were NOT executed.**
 
@@ -274,7 +293,8 @@ ${terminalContext}
 ***
 
 **Previous Conversation History is available.**
-${REJECTION_MODIFIED_INSTRUCTIONS}`; // Use the modified instructions
+${recentHistory}
+`; // Use the modified instructions
 }
 
 // Prompt for continuing interaction when no commands were proposed/executed in the last turn,
@@ -287,7 +307,9 @@ export function getContinuationPrompt(
 ): string {
 	const recentHistory = formatHistory(messages, historyLimit);
 	// Always include terminal context block
-	return `You are an AI assistant interacting with a user and potentially a live terminal. The previous step involved AI explanation/analysis, or an explicit request to read the terminal, and no commands were executed.
+	return `
+${BASE_INSTRUCTIONS}
+The previous step involved AI explanation/analysis, or an explicit request to read the terminal, and no commands were executed.
 The current goal is: ${currentGoal}
 
 **IMPORTANT CONTEXT: Below is the *current* state of the terminal. Use this context AND the conversation history to determine the next action towards the goal.**
@@ -299,6 +321,5 @@ ${terminalContext}
 
 **Conversation History (Last ${historyLimit} messages):**
 ${recentHistory}
-
-${BASE_INSTRUCTIONS}`; // Reuses BASE_INSTRUCTIONS
+`; // Reuses BASE_INSTRUCTIONS
 }
