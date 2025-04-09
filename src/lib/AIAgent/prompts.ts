@@ -2,11 +2,41 @@
 
 // Helper function to format history
 function formatHistory(messages: { type: string, content: string }[], limit: number): string {
-    return messages
-        .filter(m => m.type === 'user' || m.type === 'ai') // Only user/ai messages
-        .map(m => `${m.type === 'user' ? 'User' : 'AI'}: ${m.content}`)
-        .join('\n');
+	return messages
+		.filter((m) => m.type === 'user' || m.type === 'ai') // Only user/ai messages
+		.map((m) => `${m.type === 'user' ? 'User' : 'AI'}: ${m.content}`)
+		.join('\n');
 }
+
+const GOAL_SETTING_INSTRUCTIONS = `
+**GOAL EVALUATION INSTRUCTIONS**
+
+Your current task is *only* to evaluate the user's goal based on the provided history and the latest query. Do not attempt to execute the goal yet.
+
+Follow these steps:
+1.  **Identify Previous Goal:** Review the conversation history. Is there an active, incomplete goal from previous turns?
+2.  **Analyze Latest Query:** Examine the "Latest User Query". Does it introduce a new task, modify the existing goal, or confirm continuation?
+3.  **Determine Current Goal:**
+    *   If the latest query continues an existing, relevant, and incomplete goal, clearly state that goal, with the details.
+    *   If the latest query introduces a new task or significantly changes the direction, clearly state the *new* goal based *only* on the latest query.
+    *   If the previous goal is completed, state that.
+    *   If the query is unclear or ambiguous regarding the goal, state that clarification is needed.
+4.  **Output:** Respond *only* with the determined current goal (or the need for clarification). Do not include planning steps, commands, or conversational filler. Start your response directly with the goal statement.
+
+**Example Response 1 (Continuing Goal):**
+The current goal is to refactor the authentication module to use JWT.
+
+**Example Response 2 (New Goal):**
+The current goal is to install the 'requests' library in the Python environment.
+
+**Example Response 3 (Clarification Needed):**
+Clarification needed: The user mentioned debugging, but did not specify which part of the application or what the error is.
+
+**Example Response 4 (Goal Achieved) **
+Goal was achieved: Complete
+
+---
+`;
 
 const BASE_INSTRUCTIONS = `
 **SYSTEM INSTRUCTIONS**
@@ -17,7 +47,7 @@ You are a task-oriented assistant. Follow this four‑phase process for any user
 **Negatives**
 1. Do not use \` symbols for commands.
 2. Never assume user wants you to execute something, if it was not stated, or not necessary to complete current task.
-3. 
+3. Do not use \`\`\`text for main body, just write it without anything
 ---
 
 ---
@@ -27,7 +57,7 @@ Tell your current thought before doing the following:
 1. **Understand the Request:** Restate the user’s goal in one sentence, referencing any relevant context.
 2. **Plan the Steps:** Enumerate the precise steps (and any commands) you’ll execute to fulfill the request.  
 3. **Execute & Verify:** Group related commands into a single <cmd>…</cmd> block per message. Run the commands, then verify success before moving on.
-4. **Report Completion:** Once the task is done and verified, conclude with <task_complete/>.  
+4. **Report Completion:** Once the task is done and verified, conclude with <task_complete/>, use a separate message for this command **Important**.  
 If at any point you need clarification, ask the user and end with <wait_for_user/>.
 </thinking>
 
@@ -64,30 +94,60 @@ If at any point you need clarification, ask the user and end with <wait_for_user
 With this structure, you’ll maintain context, ensure clarity, and enforce a consistent command workflow.
 `;
 
-// Prompt for the very first turn
-export function getInitialPrompt(
-    messages: { type: string, content: string }[],
-    historyLimit: number,
-    userQuestion: string
+// Prompt specifically for Goal Setting/Evaluation
+export function getGoalSettingPrompt(
+	messages: { type: string; content: string }[],
+	historyLimit: number,
+	userQuestion: string,
+	terminalContext: string
 ): string {
-    const recentHistory = formatHistory(messages, historyLimit);
-    return `You are an AI assistant interacting with a user and potentially a live terminal.
+	const recentHistory = formatHistory(messages, historyLimit);
+	return `You are an AI assistant responsible *only* for determining the current task goal.
 
 **Conversation History (Last ${historyLimit} messages):**
 ${recentHistory}
+
 **Latest User Query:** ${userQuestion}
+
+Terminal context to make decision:
+
+${terminalContext}
+
+${GOAL_SETTING_INSTRUCTIONS}`;
+}
+
+
+// Prompt for the very first turn (after goal setting)
+export function getInitialPrompt(
+	messages: { type: string; content: string }[],
+	historyLimit: number,
+	userQuestion: string, // This might now be the *determined goal* from the previous step
+	currentGoal: string // Explicitly pass the determined goal
+): string {
+	const recentHistory = formatHistory(messages, historyLimit);
+	// Note: userQuestion might be redundant if currentGoal is passed, adjust as needed.
+	return `You are an AI assistant interacting with a user and potentially a live terminal.
+The current goal is: ${currentGoal}
+
+**Conversation History (Last ${historyLimit} messages):**
+${recentHistory}
+
+**Latest User Query (leading to current goal):** ${userQuestion}
+
 ${BASE_INSTRUCTIONS}`;
 }
 
 // Prompt after the user accepted and commands were executed
 export function getPromptAfterAcceptedCommand(
-    terminalContext: string
+	terminalContext: string,
+	currentGoal: string // Pass the goal
 ): string {
-    // History is implicitly included in the ongoing interaction with the LLM,
-    // but we could add a summary if needed.
-    return `User approved the previous command(s) and they were executed. You are an AI assistant interacting with a user and potentially a live terminal.
+	// History is implicitly included in the ongoing interaction with the LLM,
+	// but we could add a summary if needed.
+	return `User approved the previous command(s) and they were executed. You are an AI assistant interacting with a user and potentially a live terminal.
+The current goal is: ${currentGoal}
 
-**IMPORTANT CONTEXT: Below is the *updated* state of the terminal after execution. Use this context AND the conversation history to determine the next action.**
+**IMPORTANT CONTEXT: Below is the *updated* state of the terminal after execution. Use this context AND the conversation history to determine the next action towards the goal.**
 
 Updated Terminal State:
 ***
@@ -100,36 +160,36 @@ ${BASE_INSTRUCTIONS}`; // Reuses BASE_INSTRUCTIONS
 
 // Prompt after the user rejected commands
 export function getPromptAfterRejectedCommand(
-    terminalContext: string,
-    reason?: string | null // Add optional reason parameter
+	terminalContext: string,
+	currentGoal: string, // Pass the goal
+	reason?: string | null // Add optional reason parameter
 ): string {
-    // History is implicitly included.
-    // This prompt needs slightly modified instructions for Phase 1 & 2 to handle the rejection.
-    const REJECTION_MODIFIED_INSTRUCTIONS = BASE_INSTRUCTIONS
-        .replace(
-            '2.  Within the thinking block, clearly state your understanding of the user\'s request, referencing the history and terminal state.',
-            '2.  Within the thinking block, acknowledge the user rejected the previous commands. Re-evaluate the goal based on the rejection.'
-        )
-        .replace(
-            '3.  Outline the specific, sequential steps (including exact commands if applicable) you plan to take. Number the steps in your plan.',
-            '3.  Outline a revised plan: Will you ask for clarification? Propose alternative commands? Suggest a different approach? Number the steps in your plan.'
-        )
-        .replace(
-            '8.  Provide clear, concise explanatory text in your main response (outside the thinking tags). Explain *why* you are taking the planned steps.',
-            '8.  Provide clear, concise explanatory text in your main response (outside the thinking tags). Clearly state that the previous commands were rejected and explain your new proposal (alternative commands, question, etc.).'
-        )
-        .replace( // Modify completion criteria slightly for rejection case
-            '24. **Crucially: When the user\'s original query is fully resolved, verified, and no further steps are needed, you MUST include <task_complete/> in your final main response.** Do not include it prematurely.',
-            '24. **Crucially: When the user\'s original query is fully resolved, verified, and no further steps are needed, you MUST include <task_complete/> in your final main response.** Do not include it prematurely. If the task can be considered complete *without* the rejected commands, include <task_complete/>.'
-        )
-        .replace( // Modify step 25 slightly
-            '25. If the user rejected commands, acknowledge this clearly in your main response and propose a revised plan or ask for clarification, starting again with Phase 1.',
-            '25. If the user rejected commands *again*, acknowledge this clearly and perhaps ask for more direct guidance or clarification from the user.'
-        );
+	// History is implicitly included.
+	// This prompt needs slightly modified instructions for Phase 1 & 2 to handle the rejection.
+	const REJECTION_MODIFIED_INSTRUCTIONS = BASE_INSTRUCTIONS.replace(
+		'2.  Within the thinking block, clearly state your understanding of the user\'s request, referencing the history and terminal state.',
+		'2.  Within the thinking block, acknowledge the user rejected the previous commands. Re-evaluate the approach to the goal based on the rejection.' // Adjusted wording
+	)
+		.replace(
+			'3.  Outline the specific, sequential steps (including exact commands if applicable) you plan to take. Number the steps in your plan.',
+			'3.  Outline a revised plan towards the current goal: Will you ask for clarification? Propose alternative commands? Suggest a different approach? Number the steps in your plan.' // Adjusted wording
+		)
+		.replace(
+			'8.  Provide clear, concise explanatory text in your main response (outside the thinking tags). Explain *why* you are taking the planned steps.',
+			'8.  Provide clear, concise explanatory text in your main response (outside the thinking tags). Clearly state that the previous commands were rejected and explain your new proposal (alternative commands, question, etc.) to achieve the goal.' // Adjusted wording
+		)
+		.replace( // Modify completion criteria slightly for rejection case
+			'24. **Crucially: When the user\'s original query is fully resolved, verified, and no further steps are needed, you MUST include <task_complete/> in your final main response.** Do not include it prematurely.',
+			'24. **Crucially: When the current goal is fully resolved, verified, and no further steps are needed, you MUST include <task_complete/> in your final main response.** Do not include it prematurely. If the goal can be considered complete *without* the rejected commands, include <task_complete/>.' // Adjusted wording
+		)
+		.replace( // Modify step 25 slightly
+			'25. If the user rejected commands, acknowledge this clearly in your main response and propose a revised plan or ask for clarification, starting again with Phase 1.',
+			'25. If the user rejected commands *again*, acknowledge this clearly and perhaps ask for more direct guidance or clarification from the user regarding how to achieve the goal.' // Adjusted wording
+		);
 
 
-    const rejectionReasonText = reason ? `Reason provided: "${reason}"` : "No reason provided.";
-    return `The user REJECTED the previously suggested command(s). ${rejectionReasonText}. You are an AI assistant interacting with a user and potentially a live terminal.
+	const rejectionReasonText = reason ? `Reason provided: "${reason}"` : "No reason provided.";
+	return `The user REJECTED the previously suggested command(s) related to the goal: ${currentGoal}. ${rejectionReasonText}. You are an AI assistant interacting with a user and potentially a live terminal.
 
 **IMPORTANT CONTEXT: Below is the current state of the terminal. The previous commands were NOT executed.**
 
@@ -145,15 +205,17 @@ ${REJECTION_MODIFIED_INSTRUCTIONS}`; // Use the modified instructions
 // Prompt for continuing interaction when no commands were proposed/executed in the last turn,
 // or when the AI explicitly requested a terminal read (<readTerm/>)
 export function getContinuationPrompt(
-    messages: { type: string, content: string }[],
-    historyLimit: number,
-    terminalContext: string // Require terminal context again
+	messages: { type: string; content: string }[],
+	historyLimit: number,
+	terminalContext: string, // Require terminal context again
+	currentGoal: string // Pass the goal
 ): string {
-    const recentHistory = formatHistory(messages, historyLimit);
-    // Always include terminal context block
-    return `You are an AI assistant interacting with a user and potentially a live terminal. The previous step involved AI explanation/analysis, or an explicit request to read the terminal, and no commands were executed.
+	const recentHistory = formatHistory(messages, historyLimit);
+	// Always include terminal context block
+	return `You are an AI assistant interacting with a user and potentially a live terminal. The previous step involved AI explanation/analysis, or an explicit request to read the terminal, and no commands were executed.
+The current goal is: ${currentGoal}
 
-**IMPORTANT CONTEXT: Below is the *current* state of the terminal. Use this context AND the conversation history to determine the next action.**
+**IMPORTANT CONTEXT: Below is the *current* state of the terminal. Use this context AND the conversation history to determine the next action towards the goal.**
 
 Current Terminal State:
 ***

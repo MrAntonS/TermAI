@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { currentGoal } from '../stores';
+  import { get } from 'svelte/store';
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import type Terminal from '../terminal/Terminal.svelte';
   // Import prompt generation functions
-  import { getPromptAfterAcceptedCommand, getPromptAfterRejectedCommand, getContinuationPrompt, getInitialPrompt } from './prompts';
+  import { getPromptAfterAcceptedCommand, getPromptAfterRejectedCommand, getContinuationPrompt, getInitialPrompt, getGoalSettingPrompt } from './prompts'; // Added getGoalSettingPrompt
   import './AIAgent.css'; // Import the CSS file
 
   // --- Props ---
@@ -16,7 +18,7 @@
   // Add 'error', 'confirmation' types for messages
   type MessageType = 'user' | 'ai' | 'system' | 'suggestion' | 'explanation' | 'error' | 'debug' | 'confirmation';
   // Add optional 'thinking' field for AI messages
-  type Message = { type: MessageType, content: string, thinking?: string, title?: string, commands?: string[], onAccept?: () => void, onReject?: () => void };
+  type Message = { type: MessageType, content: string, thinking?: string, title?: string, commands?: string[], onAccept?: () => void, onReject?: () => void, isGoal?: boolean }; // Added isGoal flag
   // Define a type for the confirmation result
   type ConfirmationResult = {
       accepted: boolean;
@@ -33,6 +35,8 @@
   let confirmationPromiseResolver: ((result: ConfirmationResult) => void) | null = null; // Updated resolver type
   let isWaitingForUser = false; // Flag to indicate AI is waiting for user input
   let cancelRequested = false; // Flag to indicate user requested cancellation
+  // let currentGoal: string = ''; // State variable for the current goal
+  $: currentGoalValue = `${get(currentGoal)}`;
   
   const MAX_AI_STEPS = 5; // Safety limit for interaction loop
   async function sendMessage() {
@@ -58,7 +62,7 @@
     console.log("AI Agent: sendMessage proceeding with normal message flow (confirmation not active).");
 
     // --- Resume Interaction if AI was Waiting ---
-    if (isWaitingForUser) {
+    if (isWaitingForUser && userQuestion) { // Ensure there's a user question to resume with
         console.log("AI Agent: Resuming interaction after user input.");
         isWaitingForUser = false; // Reset the flag
         isLoading = true; // Set loading state
@@ -79,20 +83,34 @@
                 return;
             }
         }
-        const terminalContext = terminalContent.slice(-10).join('\n');
+        const terminalContext = terminalContent.slice(-100).join('\n');
         const historyLimit = 50;
 
-        // --- Construct Continuation Prompt ---
-        // Use getContinuationPrompt, ensuring it includes the latest user message from the history
-        // Don't pass terminal context here initially; AI hasn't requested it yet in this resume flow.
-        // Pass terminal context again
-        const continuationPrompt = getContinuationPrompt(messages, historyLimit, terminalContext);
-        console.log("AI Agent: Constructed continuation prompt:\n---\n" + continuationPrompt + "\n---");
+        // --- Step 1: Determine Goal on Resume ---
+        const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimit, userQuestion, terminalContext);
+        console.log("AI Agent: Constructed goal setting prompt (resume):\n---\n" + goalSettingPrompt + "\n---");
+        try {
+            currentGoal.set(await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt }));
+            console.log("AI Agent: Determined goal (resume):", currentGoal);
+            // Removed message displaying the goal
+            scrollToBottom();
+        } catch (error) {
+            console.error('AI Goal Setting Error on Resume:', error);
+            const goalErrorMsg = typeof error === 'string' ? error : 'Failed to determine goal.';
+            messages = [...messages, { type: 'error', content: `Goal Setting Error: ${goalErrorMsg}` }];
+            isLoading = false;
+            scrollToBottom();
+            return;
+        }
+
+        // --- Step 2: Construct Continuation Prompt with Goal ---
+        const continuationPrompt = getContinuationPrompt(messages, historyLimit, terminalContext, get(currentGoal));
+        console.log("AI Agent: Constructed continuation prompt (with goal):\n---\n" + continuationPrompt + "\n---");
 
         // --- Restart Interaction Loop ---
         try {
             // Decide on the step number - perhaps reset or use a marker? Resetting for now.
-            await runAIInteractionLoop(continuationPrompt, 0);
+            await runAIInteractionLoop(continuationPrompt, 0); // Pass currentGoal
         } catch (error) {
             console.error('AI Interaction Loop Error on Resume:', error);
             const errorMessage = typeof error === 'string' ? error : 'An unexpected error occurred during AI interaction resume.';
@@ -141,14 +159,30 @@
     // --- Gather recent conversation history ---
     const historyLimit = 50; // Include last N messages (user/ai)
 
-    // Use imported function to generate the initial prompt
-    // Remove the extra initialTerminalContext argument
-    const initialPrompt = getInitialPrompt(messages, historyLimit, userQuestion);
-    console.log("AI Agent: Constructed initial prompt:\n---\n" + initialPrompt + "\n---");
+    // --- Step 1: Determine Goal for New Interaction ---
+     const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimit, userQuestion, initialTerminalContext);
+     console.log("AI Agent: Constructed goal setting prompt (initial):\n---\n" + goalSettingPrompt + "\n---");
+     try {
+         currentGoal.set(await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt }));
+         console.log("AI Agent: Determined goal (initial):", currentGoal);
+         // Removed message displaying the goal
+         scrollToBottom();
+     } catch (error) {
+         console.error('AI Goal Setting Error (Initial):', error);
+         const goalErrorMsg = typeof error === 'string' ? error : 'Failed to determine goal.';
+         messages = [...messages, { type: 'error', content: `Goal Setting Error: ${goalErrorMsg}` }];
+         isLoading = false;
+         scrollToBottom();
+         return;
+     }
+
+    // --- Step 2: Construct Initial Prompt with Goal ---
+    const initialPrompt = getInitialPrompt(messages, historyLimit, userQuestion, get(currentGoal)); // Pass currentGoal
+    console.log("AI Agent: Constructed initial prompt (with goal):\n---\n" + initialPrompt + "\n---");
 
     // --- Start Interaction Loop ---
     try {
-        await runAIInteractionLoop(initialPrompt, 0); // Start the loop
+        await runAIInteractionLoop(initialPrompt, 0); // Pass currentGoal
     } catch (error) {
         console.error('AI Interaction Loop Error:', error);
         const errorMessage = typeof error === 'string' ? error : 'An unexpected error occurred during the AI interaction.';
@@ -160,7 +194,7 @@
   }
 
   // --- Recursive Interaction Function ---
-  async function runAIInteractionLoop(prompt: string, step: number) {
+  async function runAIInteractionLoop(prompt: string, step: number) { // Add currentGoal parameter
     // Removed commandsWereExecuted, newTerminalContent, commands declarations from here, handled within command execution logic
     if (step >= MAX_AI_STEPS) {
         messages = [...messages, { type: 'error', content: `Max interaction steps (${MAX_AI_STEPS}) reached. Stopping.` }];
@@ -224,17 +258,18 @@
     if (thinkingMatch && thinkingMatch[1]) {
         aiThinkingText = thinkingMatch[1].trim();
         // Remove thinking tag from the main response text
-        aiResponseText = aiResponseText.replace(/<thinking>.*?<\/thinking>/s, '').trim();
+        aiResponseText = aiResponseText.replace(/<thinking>(.*?)<\/thinking>/s, '').trim();
     }
 
     // Now process commands and task completion on the remaining text
     const cmdMatch = aiResponseText.match(/<cmd>(.*?)<\/cmd>/s); // Use 's' flag for multiline
+    const cmdMatchOther = aiResponseText.match(/```cmd(.*?)```/s); // Use 's' flag for multiline
     const taskCompleteMatch = aiResponseText.includes('<task_complete/>');
     const waitForUserMatch = aiResponseText.includes('<wait_for_user/>'); // Check for wait tag
 
     // Extract text part (remove cmd, task_complete, and wait_for_user tags for display)
-    if (cmdMatch) {
-        aiResponseText = aiResponseText.replace(/<cmd>.*?<\/cmd>/s, '').trim(); // Use 's' flag
+    if (cmdMatch || cmdMatchOther) {
+        aiResponseText = aiResponseText.replace(/<cmd>.*?<\/cmd>/s, '').replace(/```cmd(.*?)```/s, '').trim(); // Use 's' flag
     }
     if (taskCompleteMatch) {
         aiResponseText = aiResponseText.replace(/<task_complete\/>/, '').trim();
@@ -256,6 +291,14 @@
         scrollToBottom();
         isLoading = false; // Task complete, stop loading
         return; // End the loop
+    }
+
+    // --- Check for Goal Completion ---
+    if (get(currentGoal).toLowerCase().includes("complete")) {
+        messages = [...messages, { type: 'system', content: 'Goal marked as complete. Stopping interaction.' }];
+        scrollToBottom();
+        isLoading = false;
+        return;
     }
 
     // --- Handle Commands ---
@@ -299,12 +342,32 @@
                     throw new Error(`Command execution/read failed.`); // Stop loop
                 }
 
-                // Construct next prompt based on executed commands
-                const nextTerminalContext = newTerminalContent.slice(-10).join('\n');
-                // Use imported function to generate the prompt after accepted commands
-                const nextPrompt = getPromptAfterAcceptedCommand(nextTerminalContext);
-                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after accepted commands):\n---\n` + nextPrompt + "\n---");
-                await runAIInteractionLoop(nextPrompt, step + 1); // Continue loop
+                // --- Re-evaluate Goal After Acceptance ---
+                const outcomeMessageAccept = { type: 'system' as MessageType, content: 'Previous commands executed successfully. Reviewing goal status.' };
+                messages = [...messages, outcomeMessageAccept];
+                const nextTerminalContextAccept = newTerminalContent.slice(-100).join('\n');
+                const historyLimitAccept = 50;
+                // Check the goal
+
+                const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimitAccept, outcomeMessageAccept.content, nextTerminalContextAccept);
+                console.log("AI Agent: Constructed goal setting prompt (initial):\n---\n" + goalSettingPrompt + "\n---");
+                try {
+                    currentGoal.set(await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt }));
+                    // Removed message displaying the goal
+                    scrollToBottom();
+                } catch (error) {
+                    console.error('AI Goal Setting Error (Initial):', error);
+                    const goalErrorMsg = typeof error === 'string' ? error : 'Failed to determine goal.';
+                    messages = [...messages, { type: 'error', content: `Goal Setting Error: ${goalErrorMsg}` }];
+                    isLoading = false;
+                    scrollToBottom();
+                    return;
+                }
+
+                // --- Construct Next Prompt (Accepted) ---
+                const nextPrompt = getPromptAfterAcceptedCommand(nextTerminalContextAccept, get(currentGoal)); // Use potentially updated currentGoal
+                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after accepted commands & goal re-eval):\n---\n` + nextPrompt + "\n---");
+                await runAIInteractionLoop(nextPrompt, step + 1); // Pass potentially updated currentGoal
 
             } else {
                 // --- User Rejected ---
@@ -324,11 +387,33 @@
                      throw new Error("Failed to read terminal after command rejection."); // Stop loop
                  }
 
-                const nextTerminalContext = currentTerminalContent.slice(-10).join('\n');
-                // Use imported function to generate the prompt after rejected commands
-                const nextPrompt = getPromptAfterRejectedCommand(nextTerminalContext, confirmationResult.reason); // Pass the reason
-                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after rejected commands, reason: ${confirmationResult.reason}):\n---\n` + nextPrompt + "\n---");
-                await runAIInteractionLoop(nextPrompt, step + 1); // Continue loop
+                const nextTerminalContextReject = currentTerminalContent.slice(-100).join('\n');
+
+                 // --- Re-evaluate Goal After Rejection ---
+                 const reasonText = confirmationResult.reason ? `Reason: ${confirmationResult.reason}` : 'No specific reason provided.';
+                 const outcomeMessageReject = { type: 'system' as MessageType, content: `User rejected the previous commands. ${reasonText}. Reviewing goal status.` };
+                 messages = [...messages, outcomeMessageReject];
+                 const historyLimitReject = 50;
+
+                const goalSettingPrompt = getGoalSettingPrompt(messages, historyLimitReject, outcomeMessageReject.content, nextTerminalContextReject);
+                console.log("AI Agent: Constructed goal setting prompt (initial):\n---\n" + goalSettingPrompt + "\n---");
+                try {
+                    currentGoal.set(await invoke<string>('send_to_gemini', { prompt: goalSettingPrompt }));
+                    // Removed message displaying the goal
+                    scrollToBottom();
+                } catch (error) {
+                    console.error('AI Goal Setting Error (Initial):', error);
+                    const goalErrorMsg = typeof error === 'string' ? error : 'Failed to determine goal.';
+                    messages = [...messages, { type: 'error', content: `Goal Setting Error: ${goalErrorMsg}` }];
+                    isLoading = false;
+                    scrollToBottom();
+                    return;
+                }
+
+                // --- Construct Next Prompt (Rejected) ---
+                const nextPrompt = getPromptAfterRejectedCommand(nextTerminalContextReject, get(currentGoal), confirmationResult.reason ?? null); // Use potentially updated currentGoal
+                console.log(`AI Agent: Step ${step + 1} - Constructed next prompt (after rejected commands & goal re-eval, reason: ${confirmationResult.reason ?? 'None'}):\n---\n` + nextPrompt + "\n---");
+                await runAIInteractionLoop(nextPrompt, step + 1); // Pass potentially updated currentGoal
             }
             return; // Stop further processing in this step as the loop was continued recursively
 
@@ -388,14 +473,14 @@
 
 
         // Construct the next prompt, including AI's last response, history, and terminal state
-        const nextTerminalContext = currentTerminalContent.slice(-10).join('\n');
+        const nextTerminalContext = currentTerminalContent.slice(-100).join('\n');
         // Use imported function to generate the continuation prompt
         // Don't pass terminal context here, as <readTerm/> was not requested in this path.
         // Pass terminal context again
-        const nextPrompt = getContinuationPrompt(messages, historyLimit, nextTerminalContext);
+        const nextPrompt = getContinuationPrompt(messages, historyLimit, nextTerminalContext, get(currentGoal)); // Pass currentGoal
         console.log(`AI Agent: Step ${step + 1} - Continuing loop. Constructed next prompt:\n---\n` + nextPrompt + "\n---");
         // Recursive call for the next step
-        await runAIInteractionLoop(nextPrompt, step + 1);
+        await runAIInteractionLoop(nextPrompt, step + 1); // Pass currentGoal
     } else if (!taskCompleteMatch && !waitForUserMatch) {
         // If we reach here, it means the loop should stop for some reason
         // (e.g., max steps reached earlier, or an error occurred and was handled)
@@ -488,8 +573,7 @@
 
       // If AI was waiting for command confirmation, implicitly cancel it
       if (confirmationPromiseResolver) {
-          confirmationPromiseResolver({ accepted: false, reason: "Task restarted by user." }); // Resolve as rejected
-          confirmationPromiseResolver = null;
+          confirmationPromiseResolver = null; // Clear the resolver
       }
 
       // Optional: Focus the input textarea
@@ -522,6 +606,11 @@
       <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z"></path><path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"></path></svg>
     </button>
   </div>
+  {#if $currentGoal}
+    <div class="current-goal-display">
+      <strong>Current Goal:</strong> {$currentGoal}
+    </div>
+  {/if}
   <div class="ai-content" bind:this={aiContentElement}>
     {#each messages as message}
       {#if message.type === 'system'}
@@ -538,7 +627,7 @@
               </div>
             </details>
           {/if}
-          <b>AI:</b> {message.content}
+          <b>AI:</b> {message.content} <!-- Removed conditional Goal: prefix -->
         </div>
       {:else if message.type === 'suggestion'}
         <div class="ai-suggestion">

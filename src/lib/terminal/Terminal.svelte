@@ -217,7 +217,7 @@ if (window.ResizeObserver) {
         if (statusMessage !== newStatus) {
             statusMessage = newStatus;
             // Optional: Clear terminal on new connection? Or keep history?
-            // term.reset();
+            term.reset();
             term.writeln(`\r\n\x1b[32mAttached to active connection: ${connection.name}\x1b[0m`);
             term.focus();
         }
