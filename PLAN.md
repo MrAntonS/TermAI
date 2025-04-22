@@ -22,9 +22,16 @@
   - `/chat`: AI conversation interface
   - `/suggest`: Command suggestions
   - `/explain`: Technical explanations
-- **Dependencies**:
-  - `@mcp/core@latest`
-  - Custom MCP server setup
+show running-config | include hostname
+show hostname
+show vrf
+show version | i bin
+show inventory
+dir bootflash: | i bin
+dir flash: | i bin
+dir bootdisk: | i bin
+show boot
+
 
 ### 3. Connection Management
 - **Features**:
